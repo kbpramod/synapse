@@ -1,0 +1,20 @@
+{
+  "name": "synapse",
+  "version": "1.0.0",
+  "description": "Tzylo documentation and memory knowledge",
+  "main": "index.js",
+  "scripts": {
+    "test": "echo \"Error: no test specified\" && exit 1",
+    "ai": "uv run uvicorn apps.ai_service.src.main:app --reload"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/tzylo/synapse.git"
+  },
+  "author": "",
+  "license": "ISC",
+  "bugs": {
+    "url": "https://github.com/tzylo/synapse/issues"
+  },
+  "homepage": "https://github.com/tzylo/synapse#readme"
+}

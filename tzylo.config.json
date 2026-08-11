@@ -1,0 +1,14 @@
+{
+  "architecture_rules": [
+    "Controllers should never access DB directly",
+    "Business logic belongs in services"
+  ],
+  "coding_conventions": [
+    "Use BullMQ for long-running jobs",
+    "Prefer async/await over callbacks"
+  ],
+  "maintainability_rules": [
+    "Avoid utility files larger than 300 lines",
+    "Prefer feature-based folder structure"
+  ]
+}

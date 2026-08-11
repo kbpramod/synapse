@@ -1,0 +1,12 @@
+node_modules
+.env
+*.pem
+*env
+*.pub
+
+logs
+__pycache__/
+*.pyc
+
+.env.prod
+server

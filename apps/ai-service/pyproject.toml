@@ -1,0 +1,28 @@
+[project]
+name = "ai-service"
+version = "0.1.0"
+description = "Add your description here"
+readme = "README.md"
+authors = [
+    { name = "K B Pramod", email = "kbpramod3@gmail.com" }
+]
+requires-python = ">=3.11"
+dependencies = [
+    "clerk-backend-api>=6.0.1",
+    "fastapi>=0.141.1",
+    "openai>=2.53.0",
+    "pgvector>=0.5.0",
+    "psycopg2>=2.9.12",
+    "psycopg[binary]>=3.3.4",
+    "pyjwt[crypto]>=2.13.0",
+    "python-dotenv>=1.2.2",
+    "sqlalchemy>=2.0.51",
+    "uvicorn>=0.52.0",
+]
+
+[project.scripts]
+ai-service = "ai_service:main"
+
+[build-system]
+requires = ["uv_build>=0.12.0,<0.13.0"]
+build-backend = "uv_build"

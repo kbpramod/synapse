@@ -1,0 +1,62 @@
+services:
+  ai-service:
+    build:
+      context: ./apps/ai-service
+      dockerfile: Dockerfile
+    container_name: synapse-ai-service
+    restart: unless-stopped
+    ports:
+      - "8000:8000"
+    env_file:
+      - ./apps/ai-service/.env
+    networks:
+      - synapse-network
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8000/')"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 10s
+
+  server:
+    build:
+      context: ./server
+      dockerfile: Dockerfile
+    container_name: synapse-node-server
+    restart: unless-stopped
+    ports:
+      - "7200:7200"
+    environment:
+      - AI_SERVICE_URL=http://ai-service:8000
+    env_file:
+      - ./server/.env
+    depends_on:
+      ai-service:
+        condition: service_started
+    networks:
+      - synapse-network
+    healthcheck:
+      test: ["CMD", "wget", "--spider", "-q", "http://localhost:7200/"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 10s
+
+  # Optional Nginx Reverse Proxy (Uncomment to route both services through Port 80)
+  # nginx:
+  #   image: nginx:alpine
+  #   container_name: synapse-nginx
+  #   restart: unless-stopped
+  #   ports:
+  #     - "80:80"
+  #   volumes:
+  #     - ./nginx/nginx.conf:/etc/nginx/nginx.conf:ro
+  #   depends_on:
+  #     - server
+  #     - ai-service
+  #   networks:
+  #     - synapse-network
+
+networks:
+  synapse-network:
+    driver: bridge
