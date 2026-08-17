@@ -271,6 +271,117 @@ Respond ONLY with a valid JSON object matching this EXACT schema:
                 "files_changed": changed_files
             }
 
+    async def analyze_meeting_comprehensive(
+        self,
+        title: str,
+        transcript_text: str,
+        participants: list[str] | None = None
+    ) -> dict:
+        """
+        Analyzes a full meeting transcript to extract:
+        1. Executive & technical summary
+        2. Key architectural & product decisions
+        3. Action items & commitments with assignees
+        4. Discrete searchable knowledge facts for pgvector RAG
+        """
+        participants_str = ", ".join(participants) if participants else "Meeting attendees"
+
+        prompt = f"""You are an Engineering Memory Extraction System.
+Analyze the following meeting transcript to extract high-fidelity knowledge, decisions, and action items.
+
+Meeting Title: {title}
+Participants: {participants_str}
+
+Transcript:
+{transcript_text}
+
+Extract the following in strictly structured JSON:
+1. "summary": A clear 2-3 paragraph executive and engineering summary of the meeting discussions.
+2. "decisions": Array of architectural, product, or design decisions made during the meeting.
+   Each decision object must contain:
+   - "topic": Short topic title (e.g. "Caching Strategy", "Authentication")
+   - "decision": Clear statement of what was decided
+   - "rationale": Why this decision was chosen (or null)
+   - "section": Category ("Architecture", "Infrastructure", "Product", "Operations")
+3. "action_items": Array of actionable commitments assigned to individuals.
+   Each action item object must contain:
+   - "assignee": Name of the person responsible (or "Unassigned")
+   - "task": Specific description of the action to be taken
+   - "area": Domain area (e.g. "Backend", "Frontend", "DevOps")
+   - "work_status": "IN_PROGRESS" or "PROPOSED"
+4. "discrete_facts": Array of atomic, self-contained factual statements suitable for vector search.
+   Each fact object must contain:
+   - "content": Concise standalone statement (e.g. "[Decision] Decided to use Redis for discussion query caching.")
+   - "area": Domain area
+   - "person": Assignee or speaker name (or null)
+   - "fact_status": "ACTIVE"
+   - "work_status": "COMPLETED" (for decisions) or "IN_PROGRESS" / "PROPOSED" (for commitments)
+
+Respond ONLY with a JSON object in this exact schema:
+{{
+  "summary": "string",
+  "decisions": [
+    {{
+      "topic": "string",
+      "decision": "string",
+      "rationale": "string or null",
+      "section": "string"
+    }}
+  ],
+  "action_items": [
+    {{
+      "assignee": "string",
+      "task": "string",
+      "area": "string",
+      "work_status": "string"
+    }}
+  ],
+  "discrete_facts": [
+    {{
+      "content": "string",
+      "area": "string",
+      "person": "string or null",
+      "fact_status": "string",
+      "work_status": "string"
+    }}
+  ]
+}}
+"""
+        try:
+            response = await self.client.chat.completions.create(
+                model=self.model,
+                messages=[
+                    {
+                        "role": "system",
+                        "content": "You are a software engineering memory extractor that produces strictly formatted JSON."
+                    },
+                    {
+                        "role": "user",
+                        "content": prompt
+                    }
+                ],
+                response_format={"type": "json_object"},
+                temperature=0
+            )
+            parsed = json.loads(response.choices[0].message.content)
+            return parsed
+        except Exception as e:
+            print(f"[LLM MEETING ANALYZER ERROR] {e}")
+            return {
+                "summary": f"Discussion notes from meeting: {title}",
+                "decisions": [],
+                "action_items": [],
+                "discrete_facts": [
+                    {
+                        "content": f"Meeting '{title}' held with participants: {participants_str}",
+                        "area": "General",
+                        "person": None,
+                        "fact_status": "ACTIVE",
+                        "work_status": "COMPLETED"
+                    }
+                ]
+            }
+
 
 llm_service = LLMService()
 

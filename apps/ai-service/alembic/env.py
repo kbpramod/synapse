@@ -32,6 +32,7 @@ from src.models.github_user import GithubUser
 from src.models.pull_request import PullRequest
 from src.models.commit import Commit
 from src.models.fact import Fact
+from src.models.meeting import Meeting
 
 # Alembic Config object
 config = context.config

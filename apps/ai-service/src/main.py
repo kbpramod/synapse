@@ -21,6 +21,12 @@ from src.models.person import Person, IdentityLink
 from src.models.work_item import WorkItem
 from src.models.event_node import EventNode
 from src.models.event_relationship import EventRelationship
+from src.models.github_event import GithubEvent
+from src.models.github_user import GithubUser
+from src.models.pull_request import PullRequest
+from src.models.commit import Commit
+from src.models.fact import Fact
+from src.models.meeting import Meeting
 
 # Import API Routers
 from src.api.user import router as user_router
@@ -31,6 +37,7 @@ from src.api.memory import router as memory_router
 from src.api.webhooks import router as webhooks_router
 from src.api.github import router as github_router, github_installation_setup_callback
 from src.api.events import router as events_router
+from src.api.meetings import router as meetings_router
 from src.api.query import router as query_router
 from src.api.identity import router as identity_router
 from src.api.work_items import router as work_items_router
@@ -75,6 +82,7 @@ async def custom_http_exception_handler(request: Request, exc: HTTPException):
 
 
 # 3. Include Routers
+app.include_router(meetings_router)
 app.include_router(query_router)
 app.include_router(identity_router)
 app.include_router(work_items_router)
