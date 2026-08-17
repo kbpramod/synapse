@@ -90,18 +90,21 @@ async def github_installation_setup_callback(
 
     # Create or update GitHub Installation record
     existing_installation = db.query(GithubInstallation).filter(
-        GithubInstallation.installation_id == str(installation_id)
+        GithubInstallation.github_installation_id == str(installation_id)
     ).first()
 
     if not existing_installation:
         installation = GithubInstallation(
             user_id=user_id,
-            installation_id=str(installation_id)
+            github_installation_id=str(installation_id),
+            status="active",
+            installed_at=datetime.utcnow()
         )
         db.add(installation)
         db.flush()
     else:
         existing_installation.user_id = user_id
+        existing_installation.status = "active"
         installation = existing_installation
 
     # Query real installation repositories from GitHub REST API using App PEM key
@@ -122,11 +125,13 @@ async def github_installation_setup_callback(
                 new_repo = Repository(
                     id=repo_id,
                     user_id=user_id,
-                    github_installation_id=installation.id,
+                    installation_id=installation.id,
                     github_repository_id=str(r_data.get("id")),
                     name=repo_name,
                     full_name=full_name,
                     owner=r_data.get("owner", {}).get("login"),
+                    private=bool(r_data.get("private", False)),
+                    active=True,
                     status="Ready",
                     last_sync="Just now",
                     knowledge_nodes_count=1,
@@ -136,8 +141,10 @@ async def github_installation_setup_callback(
                 )
                 db.add(new_repo)
             else:
-                existing_repo.github_installation_id = installation.id
+                existing_repo.installation_id = installation.id
                 existing_repo.user_id = user_id
+                existing_repo.private = bool(r_data.get("private", False))
+                existing_repo.active = True
     else:
         # Fallback provision if GitHub API credentials not fully set up in dev
         user_repos = db.query(Repository).filter(Repository.user_id == user_id).all()
@@ -146,8 +153,10 @@ async def github_installation_setup_callback(
                 Repository(
                     id=f"auth-service-{str(installation_id)[:6]}",
                     user_id=user_id,
-                    github_installation_id=installation.id,
+                    installation_id=installation.id,
                     name="auth-service",
+                    private=False,
+                    active=True,
                     status="Ready",
                     last_sync="Just now",
                     knowledge_nodes_count=2341,
@@ -158,8 +167,10 @@ async def github_installation_setup_callback(
                 Repository(
                     id=f"backend-api-{str(installation_id)[:6]}",
                     user_id=user_id,
-                    github_installation_id=installation.id,
+                    installation_id=installation.id,
                     name="backend-api",
+                    private=False,
+                    active=True,
                     status="Indexing",
                     last_sync="Running...",
                     knowledge_nodes_count=1890,

@@ -9,8 +9,10 @@ from src.db.database import engine, Base
 
 # Import all SQLAlchemy models to register with Base metadata
 from src.models.user import User
+from src.models.organization import Organization
+from src.models.organization_member import OrganizationMember
 from src.models.project import Project
-from src.models.repository import Repository
+from src.models.repository import Repository, GithubRepository
 from src.models.doc_page import DocPage
 from src.models.github_install_state import GithubInstallState
 from src.models.github_installation import GithubInstallation

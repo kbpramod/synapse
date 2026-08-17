@@ -60,6 +60,8 @@ async def connect_new_repository(
         id=repo_id,
         user_id=user.id,
         name=repo_name,
+        private=False,
+        active=True,
         status="Indexing",
         last_sync="Syncing now...",
         knowledge_nodes_count=0,

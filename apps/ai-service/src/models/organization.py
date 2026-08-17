@@ -2,17 +2,18 @@ from datetime import datetime
 from uuid import uuid4
 from typing import TYPE_CHECKING, List
 
-from sqlalchemy import Boolean, DateTime, String
+from sqlalchemy import DateTime, String
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from src.db.database import Base
 
 if TYPE_CHECKING:
     from src.models.organization_member import OrganizationMember
+    from src.models.github_installation import GithubInstallation
 
 
-class User(Base):
-    __tablename__ = "users"
+class Organization(Base):
+    __tablename__ = "organizations"
 
     id: Mapped[str] = mapped_column(
         String,
@@ -20,26 +21,8 @@ class User(Base):
         default=lambda: str(uuid4())
     )
 
-    clerk_user_id: Mapped[str] = mapped_column(
+    name: Mapped[str] = mapped_column(
         String,
-        unique=True,
-        nullable=False,
-        index=True
-    )
-
-    email: Mapped[str | None] = mapped_column(
-        String,
-        nullable=True
-    )
-
-    name: Mapped[str | None] = mapped_column(
-        String,
-        nullable=True
-    )
-
-    is_verified: Mapped[bool] = mapped_column(
-        Boolean,
-        default=True,
         nullable=False
     )
 
@@ -55,9 +38,14 @@ class User(Base):
     )
 
     # Relationships
-    organization_memberships: Mapped[List["OrganizationMember"]] = relationship(
+    members: Mapped[List["OrganizationMember"]] = relationship(
         "OrganizationMember",
-        back_populates="user",
+        back_populates="organization",
         cascade="all, delete-orphan"
     )
 
+    installations: Mapped[List["GithubInstallation"]] = relationship(
+        "GithubInstallation",
+        back_populates="organization",
+        cascade="all, delete-orphan"
+    )
