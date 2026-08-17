@@ -128,6 +128,18 @@ class GithubRepository(Base):
         cascade="all, delete-orphan"
     )
 
+    pull_requests: Mapped[List["PullRequest"]] = relationship(
+        "PullRequest",
+        back_populates="repository",
+        cascade="all, delete-orphan"
+    )
+
+    facts: Mapped[List["Fact"]] = relationship(
+        "Fact",
+        back_populates="repository",
+        cascade="all, delete-orphan"
+    )
+
     # Backward compatibility property for github_installation_id
     @property
     def github_installation_id(self) -> Optional[str]:

@@ -15,9 +15,11 @@ from src.models.repository import Repository, GithubRepository
 from src.models.user import User
 from src.models.github_installation import GithubInstallation
 from src.schemas.event import EventCreate
+from src.repositories.event_repository import event_repository
 from src.services.event_service import event_service
 from src.services.identity_service import identity_service
 from src.services.change_analyzer_service import change_analyzer_service
+from src.services.fact_service import fact_service
 from src.services.github_service import (
     parse_github_timestamp,
     extract_installation_repo_info,
@@ -25,6 +27,16 @@ from src.services.github_service import (
     upsert_github_repositories,
     deactivate_github_repositories,
     sync_installation_all_repositories,
+    fetch_pull_request_files,
+    fetch_pull_request_commits,
+    post_pull_request_comment,
+    record_github_event,
+    sync_github_user,
+    sync_pull_request,
+    sync_commits,
+    ensure_github_repository,
+    ensure_github_user,
+    ensure_github_context,
 )
 
 logger = logging.getLogger(__name__)
@@ -326,61 +338,168 @@ async def handle_pull_request_event(
     received_at: datetime,
     db: Session
 ) -> Dict[str, Any]:
-    """Handles pull_request events: diff analysis, change record, identity resolution, knowledge embedding."""
+    """
+    V1 Pull Request Flow:
+    1. Scope: Handles 'opened' PR events.
+    2. Idempotency: Deduplicates against existing events to prevent duplicate comments on webhook retries.
+    3. Diff Filtering: Fetches changed files/diffs and filters noise (lockfiles, generated dirs, size budget).
+    4. AI Change Analyzer: Extracts structured changelog & impact JSON.
+    5. Knowledge Storage: Stores EventNode & KnowledgeNode (pgvector RAG).
+    6. Automated Comment: Posts structured Tzylo Change Summary to GitHub PR via REST API.
+    """
     action = body.get("action")
     pr = body.get("pull_request", {})
-    repo_data = body.get("repository", {})
-    repo_name = repo_data.get("name") or "default-repo"
-    repo_gh_id = str(repo_data.get("id")) if repo_data.get("id") else None
-    repo_full_name = repo_data.get("full_name") or repo_name
-
-    db_repo = db.query(GithubRepository).filter(
-        (GithubRepository.github_repository_id == repo_gh_id) |
-        (GithubRepository.full_name == repo_full_name) |
-        (GithubRepository.name == repo_name)
-    ).first()
-    repo_id = db_repo.id if db_repo else repo_name.lower().replace(" ", "-")
-
     pr_number = pr.get("number", 1)
     pr_title = pr.get("title", "")
     pr_body = pr.get("body") or ""
-    is_merged = pr.get("merged", False)
     actor = pr.get("user", {}).get("login") or "github-user"
 
-    # Resolve actor identity
-    person, identity_link = identity_service.resolve_identity(
+    # Only process 'opened' in V1 scope
+    if action != "opened":
+        logger.info(f"[GITHUB WEBHOOK] Skipping PR #{pr_number} with action='{action}' (V1 scope narrowed to 'opened')")
+        return {
+            "received": True,
+            "event": "pull_request",
+            "action": action,
+            "pr_number": pr_number,
+            "status": "ignored_non_opened_action"
+        }
+
+    repo_data = body.get("repository", {})
+    repo_name = repo_data.get("name") or "default-repo"
+    owner_login = repo_data.get("owner", {}).get("login") if isinstance(repo_data.get("owner"), dict) else repo_name.split("/")[0]
+
+    # Auto-provision installation, repository, user, and person entities
+    ctx = ensure_github_context(db=db, payload=body, event_time=event_time)
+    db_inst = ctx["installation"]
+    db_repo = ctx["repository"]
+    gh_user = ctx["user"]
+    person = ctx["person"]
+    repo_id = ctx["repo_id"]
+    inst_id_str = str(body.get("installation", {}).get("id") or "")
+
+    # 1. Idempotency Check: Prevent duplicate processing and multiple comments
+    ref_id = f"gh_pr_{repo_id}_{pr_number}_opened"
+    existing_event = event_repository.get_by_reference_id(db, reference_id=ref_id, source="github")
+    if existing_event:
+        logger.info(f"[IDEMPOTENT SKIP] PR #{pr_number} opened event already processed (reference_id={ref_id}).")
+        return {
+            "received": True,
+            "event": "pull_request",
+            "action": "opened",
+            "pr_number": pr_number,
+            "status": "already_processed"
+        }
+
+    # 2. Record Immutable GitHub Event Audit Log
+    delivery_id = body.get("delivery_id")
+    gh_event = record_github_event(
         db=db,
-        raw_identity=actor,
-        provider="github"
+        event_type="pull_request.opened",
+        payload=body,
+        installation_id=db_inst.id if db_inst else None,
+        repository_id=repo_id,
+        github_event_id=delivery_id,
+        github_created_at=event_time,
+        received_at=received_at
     )
 
-    # Classify PR event_type
-    if action == "opened":
-        event_type = "pr_created"
-    elif action == "closed" and is_merged:
-        event_type = "pr_merged"
-    elif action == "closed" and not is_merged:
-        event_type = "pr_closed"
-    else:
-        event_type = f"pr_{action}"
+    # 3. Upsert Pull Request Entity
+    pull_request = sync_pull_request(
+        db=db,
+        pr_data=pr,
+        repository_id=repo_id,
+        author_github_user_id=gh_user.id if gh_user else None
+    )
 
-    # Analyze PR diff and construct Change Record
-    changed_files = [f.get("filename") for f in pr.get("files", [])] if "files" in pr else []
+    # 5. Fetch PR Changed Files & Diffs from GitHub API (or fallback to webhook payload)
+    files_data = []
+    commits_data = []
+    if inst_id_str:
+        files_data = fetch_pull_request_files(
+            installation_id=inst_id_str,
+            owner=owner_login,
+            repo=repo_name,
+            pull_number=pr_number
+        )
+        commits_data = fetch_pull_request_commits(
+            installation_id=inst_id_str,
+            owner=owner_login,
+            repo=repo_name,
+            pull_number=pr_number
+        )
+
+    if not files_data and "files" in pr:
+        files_data = pr.get("files", [])
+
+    if not commits_data and "commits" in body:
+        commits_data = body.get("commits", [])
+
+    # If head commit exists in PR object, include it
+    head_sha = pr.get("head", {}).get("sha")
+    author_data = pr.get("user", {})
+    if not commits_data and head_sha:
+        commits_data = [{
+            "sha": head_sha,
+            "commit": {"message": pr_title, "author": {"date": event_time.isoformat()}},
+            "author": author_data
+        }]
+
+    # 6. Sync Commits
+    synced_commits = sync_commits(
+        db=db,
+        commits_data=commits_data,
+        pull_request_id=pull_request.id,
+        repository_id=repo_id,
+        default_author_user_id=gh_user.id if gh_user else None
+    )
+
     diff_snippet = pr.get("patch") or pr_body
 
+    # 7. Analyze PR through DiffFilterService and AI Change Analyzer
     change_record = await change_analyzer_service.analyze_pr(
         title=pr_title,
         body=pr_body,
-        changed_files=changed_files,
+        files_data=files_data,
         diff_snippet=diff_snippet
     )
 
-    ref_id = f"gh_pr_{repo_id}_{pr_number}_{action}"
-    content = f"GitHub PR #{pr_number} [{event_type}]: {change_record['summary']}"
+    # 8. Create Discrete Facts (fact_status='ACTIVE', work_status='IN_PROGRESS')
+    base_fact_meta = {
+        "pr_number": pr_number,
+        "pr_title": pr_title,
+        "source_branch": pull_request.source_branch,
+        "target_branch": pull_request.target_branch,
+        "head_sha": pull_request.head_sha,
+        "author": actor
+    }
+    created_facts = await fact_service.create_facts_from_change_record(
+        db=db,
+        change_record=change_record,
+        pull_request_id=pull_request.id,
+        repository_id=repo_id,
+        person_id=person.id if person else None,
+        base_metadata=base_fact_meta
+    )
 
+    # 9. Post Automated PR Comment to GitHub
+    comment_posted = False
+    comment_res = None
+    if inst_id_str and change_record.get("comment_markdown"):
+        comment_res = post_pull_request_comment(
+            installation_id=inst_id_str,
+            owner=owner_login,
+            repo=repo_name,
+            pull_number=pr_number,
+            comment_body=change_record["comment_markdown"]
+        )
+        comment_posted = comment_res.get("success", False)
+
+    # 10. Ingest Event into Timeline Event Pipeline
+    content = f"GitHub PR #{pr_number} [opened]: {change_record['summary']}"
     event_in = EventCreate(
         source="github",
-        event_type=event_type,
+        event_type="pr_created",
         timestamp=event_time,
         actor=actor,
         entity_type="pull_request",
@@ -389,23 +508,30 @@ async def handle_pull_request_event(
         reference_id=ref_id,
         metadata_json={
             "pr_number": pr_number,
+            "pr_id": pull_request.id,
             "repo": repo_name,
-            "action": action,
-            "merged": is_merged,
+            "source_branch": pull_request.source_branch,
+            "target_branch": pull_request.target_branch,
+            "action": "opened",
+            "facts_count": len(created_facts),
+            "commits_count": len(synced_commits),
             "change_record": {
                 "summary": change_record["summary"],
                 "changes": change_record["changes"],
-                "areas": change_record["areas"]
+                "impact": change_record["impact"],
+                "files_changed": change_record["files_changed"]
             },
             "html_url": pr.get("html_url"),
             "event_time": event_time.isoformat(),
-            "received_at": received_at.isoformat()
+            "received_at": received_at.isoformat(),
+            "comment_posted": comment_posted,
+            "comment_details": comment_res
         }
     )
 
     created_node, created = await event_service.ingest_event(db, event_in)
 
-    # Index into Knowledge Base for pgvector RAG
+    # 11. Index into Knowledge Base for backward-compatible pgvector RAG
     if created and change_record.get("embedding"):
         try:
             kn = KnowledgeNode(
@@ -418,17 +544,27 @@ async def handle_pull_request_event(
                 event_id=created_node.id
             )
             db.add(kn)
-            db.commit()
         except Exception as err:
-            db.rollback()
             logger.error(f"[KNOWLEDGE INDEX ERROR] {err}")
+
+    db.commit()
 
     return {
         "received": True,
         "event": "pull_request",
-        "action": action,
+        "action": "opened",
+        "pr_id": pull_request.id,
         "pr_number": pr_number,
-        "change_summary": change_record["summary"]
+        "source_branch": pull_request.source_branch,
+        "target_branch": pull_request.target_branch,
+        "author": actor,
+        "github_user_id": gh_user.id if gh_user else None,
+        "person_id": person.id if person else None,
+        "change_summary": change_record["summary"],
+        "facts_count": len(created_facts),
+        "commits_count": len(synced_commits),
+        "comment_posted": comment_posted,
+        "comment_markdown": change_record.get("comment_markdown")
     }
 
 
@@ -446,6 +582,24 @@ async def handle_pull_request_review_event(
     state = review.get("state", "").lower()
     actor = review.get("user", {}).get("login") or "reviewer"
 
+    # Auto-provision installation, repository, user, and person entities
+    ctx = ensure_github_context(db=db, payload=body, event_time=event_time)
+    db_inst = ctx["installation"]
+    repo_id = ctx["repo_id"]
+
+    # Record immutable audit log
+    delivery_id = body.get("delivery_id")
+    record_github_event(
+        db=db,
+        event_type=f"pull_request_review.{action or state}",
+        payload=body,
+        installation_id=db_inst.id if db_inst else None,
+        repository_id=repo_id,
+        github_event_id=delivery_id,
+        github_created_at=event_time,
+        received_at=received_at
+    )
+
     if state == "approved":
         event_type = "pr_approved"
     elif state == "changes_requested":
@@ -453,7 +607,7 @@ async def handle_pull_request_review_event(
     else:
         event_type = "review_submitted"
 
-    ref_id = f"gh_review_{pr_number}_{review.get('id', datetime.utcnow().timestamp())}"
+    ref_id = f"gh_review_{pr_number}_{review.get('id', int(received_at.timestamp()))}"
     content = f"GitHub Review on PR #{pr_number} [{event_type}]: {review.get('body', state)}"
 
     event_in = EventCreate(
@@ -474,6 +628,7 @@ async def handle_pull_request_review_event(
         }
     )
     await event_service.ingest_event(db, event_in)
+    db.commit()
 
     return {"received": True, "event": "pull_request_review", "event_type": event_type}
 

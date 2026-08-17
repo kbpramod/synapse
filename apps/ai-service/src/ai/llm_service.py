@@ -208,28 +208,31 @@ Respond ONLY with a JSON object in this schema:
         changed_files: list[str],
         diff_snippet: str
     ) -> dict:
-        """Analyze a PR title, body, list of files, and patch diff to generate a semantic ChangeRecord."""
-        prompt = f"""You are a PR Change Analyzer for an Engineering Memory System.
-Developers sometimes write poor PR titles or empty descriptions (e.g. "fix", "changes", "commit 123").
-Your task is to analyze the PR metadata, changed files, and diff snippet to construct a high-quality semantic ChangeRecord.
+        """Analyze a PR title, body, list of files, and patch diff to generate a structured ChangeRecord."""
+        prompt = f"""You are a Senior Engineering Change Analyzer.
+Developers sometimes write poor PR titles or empty descriptions (e.g. "fix", "changes", "wip").
+Your task is to analyze the PR metadata, changed files, and filtered diff snippet to construct a precise, high-value structured ChangeRecord.
 
 PR Title: {pr_title or 'Untitled'}
 PR Body: {pr_body or 'No description provided'}
 Changed Files: {json.dumps(changed_files)}
 
-Diff Snippet (Truncated):
-{diff_snippet[:3000]}
+Filtered Diff Snippet:
+{diff_snippet}
 
-Generate a structured ChangeRecord object with:
-- summary: A clear 1-2 sentence high-level summary of what this PR actually implemented or changed.
-- changes: A list of specific functional/architectural changes made in this PR.
-- areas: A list of engineering/domain areas affected (e.g. "Discussions API", "Caching", "Authentication", "Database Migration").
-
-Respond ONLY with a JSON object in this schema:
+Respond ONLY with a valid JSON object matching this EXACT schema:
 {{
-  "summary": "string",
-  "changes": ["string"],
-  "areas": ["string"]
+  "summary": "A concise 1-2 sentence high-level summary of what was implemented or changed.",
+  "changes": [
+    {{
+      "area": "Engineering area or component (e.g., Caching, API, Database, Testing, Auth)",
+      "description": "Specific functional or architectural change made."
+    }}
+  ],
+  "impact": [
+    "Bullet points of architectural, performance, security, or behavioral impacts."
+  ],
+  "files_changed": {json.dumps(changed_files)}
 }}
 """
         try:
@@ -238,7 +241,7 @@ Respond ONLY with a JSON object in this schema:
                 messages=[
                     {
                         "role": "system",
-                        "content": "You analyze PR diffs and metadata into clean JSON change records."
+                        "content": "You are a software architect that analyzes code changes and outputs strictly structured JSON."
                     },
                     {
                         "role": "user",
@@ -248,13 +251,24 @@ Respond ONLY with a JSON object in this schema:
                 response_format={"type": "json_object"},
                 temperature=0
             )
-            return json.loads(response.choices[0].message.content)
+            parsed = json.loads(response.choices[0].message.content)
+            if not parsed.get("files_changed"):
+                parsed["files_changed"] = changed_files
+            return parsed
         except Exception as e:
             print(f"[LLM CHANGE ANALYZER ERROR] {e}")
             return {
-                "summary": pr_title or "PR code changes",
-                "changes": [pr_title or "Updated files"],
-                "areas": ["General"]
+                "summary": pr_title or "Code changes updated",
+                "changes": [
+                    {
+                        "area": "General",
+                        "description": pr_title or "Updated application files"
+                    }
+                ],
+                "impact": [
+                    "Updated repository source files."
+                ],
+                "files_changed": changed_files
             }
 
 

@@ -11,6 +11,11 @@ from src.models.person import Person, IdentityLink
 from src.models.work_item import WorkItem
 from src.models.event_node import EventNode
 from src.models.event_relationship import EventRelationship
+from src.models.github_event import GithubEvent
+from src.models.github_user import GithubUser
+from src.models.pull_request import PullRequest
+from src.models.commit import Commit
+from src.models.fact import Fact
 
 __all__ = [
     "User",
@@ -28,4 +33,9 @@ __all__ = [
     "WorkItem",
     "EventNode",
     "EventRelationship",
+    "GithubEvent",
+    "GithubUser",
+    "PullRequest",
+    "Commit",
+    "Fact",
 ]
