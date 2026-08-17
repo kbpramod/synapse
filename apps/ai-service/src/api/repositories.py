@@ -54,12 +54,13 @@ async def connect_new_repository(
 ):
     """Triggered when a user selects a GitHub repository to connect and index."""
     repo_name = payload.repository.split("/")[-1] if "/" in payload.repository else payload.repository
-    repo_id = repo_name.lower().replace(" ", "-")
+    full_name = payload.repository if "/" in payload.repository else repo_name
 
     repo = Repository(
-        id=repo_id,
+        id=str(uuid4()),
         user_id=user.id,
         name=repo_name,
+        full_name=full_name,
         private=False,
         active=True,
         status="Indexing",

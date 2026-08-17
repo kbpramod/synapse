@@ -1,6 +1,7 @@
 import os
 import secrets
 from datetime import datetime, timedelta
+from uuid import uuid4
 from fastapi import APIRouter, Depends, HTTPException, Query, status
 from fastapi.responses import RedirectResponse
 from sqlalchemy.orm import Session
@@ -9,9 +10,13 @@ from src.api.deps import require_auth
 from src.db.session import get_db
 from src.models.github_install_state import GithubInstallState
 from src.models.github_installation import GithubInstallation
-from src.models.repository import Repository
+from src.models.organization_member import OrganizationMember
+from src.models.repository import Repository, GithubRepository
 from src.models.user import User
-from src.services.github_service import fetch_installation_repositories
+from src.services.github_service import (
+    fetch_installation_repositories,
+    sync_installation_all_repositories,
+)
 
 router = APIRouter(prefix="/api/github", tags=["GitHub OAuth & Installation"])
 
@@ -86,7 +91,9 @@ async def github_installation_setup_callback(
         # State expired or invalid (prevents installation_id spoofing)
         return RedirectResponse(url=f"{frontend_url}/?error=invalid_or_expired_state")
 
-    user_id = state_record.user_id
+    # Look up user's organization if any
+    org_member = db.query(OrganizationMember).filter(OrganizationMember.user_id == user_id).first()
+    org_id = org_member.organization_id if org_member else None
 
     # Create or update GitHub Installation record
     existing_installation = db.query(GithubInstallation).filter(
@@ -96,6 +103,7 @@ async def github_installation_setup_callback(
     if not existing_installation:
         installation = GithubInstallation(
             user_id=user_id,
+            organization_id=org_id,
             github_installation_id=str(installation_id),
             status="active",
             installed_at=datetime.utcnow()
@@ -104,57 +112,29 @@ async def github_installation_setup_callback(
         db.flush()
     else:
         existing_installation.user_id = user_id
+        if org_id:
+            existing_installation.organization_id = org_id
         existing_installation.status = "active"
         installation = existing_installation
 
-    # Query real installation repositories from GitHub REST API using App PEM key
-    real_repos = fetch_installation_repositories(str(installation_id))
+    # Perform repository synchronization via GitHub REST API
+    synced_repos = sync_installation_all_repositories(
+        db=db,
+        installation=installation,
+        user_id=user_id
+    )
 
-    if real_repos:
-        for r_data in real_repos:
-            repo_name = r_data.get("name")
-            full_name = r_data.get("full_name") or repo_name
-            repo_id = repo_name.lower().replace(" ", "-")
-
-            existing_repo = db.query(Repository).filter(
-                Repository.user_id == user_id,
-                Repository.name == repo_name
-            ).first()
-
-            if not existing_repo:
-                new_repo = Repository(
-                    id=repo_id,
-                    user_id=user_id,
-                    installation_id=installation.id,
-                    github_repository_id=str(r_data.get("id")),
-                    name=repo_name,
-                    full_name=full_name,
-                    owner=r_data.get("owner", {}).get("login"),
-                    private=bool(r_data.get("private", False)),
-                    active=True,
-                    status="Ready",
-                    last_sync="Just now",
-                    knowledge_nodes_count=1,
-                    doc_pages_count=1,
-                    github_url=r_data.get("html_url", f"https://github.com/{full_name}"),
-                    connected_at=datetime.utcnow().strftime("%Y-%m-%d")
-                )
-                db.add(new_repo)
-            else:
-                existing_repo.installation_id = installation.id
-                existing_repo.user_id = user_id
-                existing_repo.private = bool(r_data.get("private", False))
-                existing_repo.active = True
-    else:
+    if not synced_repos:
         # Fallback provision if GitHub API credentials not fully set up in dev
         user_repos = db.query(Repository).filter(Repository.user_id == user_id).all()
         if not user_repos:
             default_repos = [
                 Repository(
-                    id=f"auth-service-{str(installation_id)[:6]}",
+                    id=str(uuid4()),
                     user_id=user_id,
                     installation_id=installation.id,
                     name="auth-service",
+                    full_name="tzylo/auth-service",
                     private=False,
                     active=True,
                     status="Ready",
@@ -165,10 +145,11 @@ async def github_installation_setup_callback(
                     connected_at=datetime.utcnow().strftime("%Y-%m-%d")
                 ),
                 Repository(
-                    id=f"backend-api-{str(installation_id)[:6]}",
+                    id=str(uuid4()),
                     user_id=user_id,
                     installation_id=installation.id,
                     name="backend-api",
+                    full_name="tzylo/backend-api",
                     private=False,
                     active=True,
                     status="Indexing",
