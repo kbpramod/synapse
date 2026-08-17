@@ -44,6 +44,19 @@ class KnowledgeNode(Base):
         nullable=False
     )
 
+    source: Mapped[str] = mapped_column(
+        String,
+        nullable=True,
+        default="manual",
+        index=True
+    )
+
+    event_id: Mapped[str] = mapped_column(
+        String,
+        nullable=True,
+        index=True
+    )
+
     created_at: Mapped[datetime] = mapped_column(
         DateTime,
         default=datetime.utcnow

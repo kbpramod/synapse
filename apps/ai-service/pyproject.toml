@@ -18,7 +18,9 @@ dependencies = [
     "python-dotenv>=1.2.2",
     "sqlalchemy>=2.0.51",
     "uvicorn>=0.52.0",
+    "alembic>=1.13.0",
 ]
+
 
 [project.scripts]
 ai-service = "ai_service:main"
