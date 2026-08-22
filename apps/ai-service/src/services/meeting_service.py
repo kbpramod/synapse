@@ -17,11 +17,94 @@ from src.services.fact_service import fact_service
 from src.services.event_service import event_service
 from src.ai.llm_service import llm_service
 from src.ai.embedding_service import embedding_service
+from src.transcription.factory import get_transcript_provider
+from src.transcription.utils import parse_google_meet_url
+from src.transcription.models import CanonicalTranscript
 
 logger = logging.getLogger(__name__)
 
 
 class MeetingService:
+
+    async def start_vexa_meeting(
+        self,
+        db: Session,
+        meeting_url: str,
+        title: Optional[str] = None
+    ) -> Meeting:
+        """
+        Dispatches a Vexa meeting bot to a Google Meet call and creates the local meeting record.
+        """
+        native_meeting_id = parse_google_meet_url(meeting_url)
+        meeting_title = title or "Engineering Sync"
+
+        provider = get_transcript_provider()
+        bot_info = await provider.start_meeting(
+            meeting_url=meeting_url,
+            native_meeting_id=native_meeting_id,
+            title=meeting_title,
+            bot_name="Engineering Assistant"
+        )
+
+        meeting_id = str(uuid4())
+        meeting = Meeting(
+            id=meeting_id,
+            title=meeting_title,
+            platform="google_meet",
+            meeting_url=meeting_url,
+            native_meeting_id=native_meeting_id,
+            vexa_meeting_id=bot_info.bot_id,
+            status=bot_info.status or "joining",
+            started_at=datetime.utcnow()
+        )
+        db.add(meeting)
+        db.commit()
+        db.refresh(meeting)
+
+        logger.info(f"[MEETING CREATED] Started meeting id='{meeting.id}', native_id='{native_meeting_id}', status='{meeting.status}'")
+        return meeting
+
+    async def get_canonical_transcript(
+        self,
+        db: Session,
+        meeting_id: str
+    ) -> Optional[CanonicalTranscript]:
+        """
+        Retrieves the canonical transcript for a meeting from the transcription provider.
+        """
+        meeting = db.query(Meeting).filter(
+            (Meeting.id == meeting_id) | (Meeting.native_meeting_id == meeting_id) | (Meeting.external_meeting_id == meeting_id)
+        ).first()
+
+        if not meeting:
+            return None
+
+        native_id = meeting.native_meeting_id
+        if not native_id and meeting.meeting_url:
+            try:
+                native_id = parse_google_meet_url(meeting.meeting_url)
+            except Exception:
+                native_id = meeting.id
+        elif not native_id:
+            native_id = meeting.id
+
+        provider = get_transcript_provider()
+        canonical_transcript = await provider.get_transcript(
+            native_meeting_id=native_id,
+            platform=meeting.platform or "google_meet",
+            meeting_id=meeting.id,
+            title=meeting.title
+        )
+
+        # Update local record with latest participant list / status if active
+        if canonical_transcript.segments:
+            if meeting.status == "joining":
+                meeting.status = "active"
+            meeting.participants_json = canonical_transcript.participants
+            db.commit()
+
+        canonical_transcript.status = meeting.status
+        return canonical_transcript
 
     def create_meeting_job(
         self,

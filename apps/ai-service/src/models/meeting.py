@@ -14,8 +14,14 @@ class Meeting(Base):
     title = Column(String, nullable=False, default="Untitled Meeting")
     organization_id = Column(String, ForeignKey("organizations.id", ondelete="SET NULL"), nullable=True)
     repository_id = Column(String, ForeignKey("github_repositories.id", ondelete="SET NULL"), nullable=True)
-    status = Column(String, nullable=False, default="PROCESSING", index=True)  # PENDING, PROCESSING, COMPLETED, FAILED
+    status = Column(String, nullable=False, default="joining", index=True)  # joining, active, completed, failed, PROCESSING
     error_message = Column(Text, nullable=True)
+    
+    # Transcription / Provider fields
+    platform = Column(String, nullable=False, default="google_meet")
+    meeting_url = Column(String, nullable=True)
+    native_meeting_id = Column(String, index=True, nullable=True)
+    vexa_meeting_id = Column(String, index=True, nullable=True)
     
     started_at = Column(DateTime, nullable=True)
     ended_at = Column(DateTime, nullable=True)

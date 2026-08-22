@@ -37,7 +37,7 @@ from src.api.memory import router as memory_router
 from src.api.webhooks import router as webhooks_router
 from src.api.github import router as github_router, github_installation_setup_callback
 from src.api.events import router as events_router
-from src.api.meetings import router as meetings_router
+from src.api.meetings import router as meetings_router, v1_router as meetings_v1_router
 from src.api.query import router as query_router
 from src.api.identity import router as identity_router
 from src.api.work_items import router as work_items_router
@@ -83,6 +83,7 @@ async def custom_http_exception_handler(request: Request, exc: HTTPException):
 
 # 3. Include Routers
 app.include_router(meetings_router)
+app.include_router(meetings_v1_router)
 app.include_router(query_router)
 app.include_router(identity_router)
 app.include_router(work_items_router)
@@ -108,6 +109,10 @@ async def startup():
             conn.execute(text("ALTER TABLE knowledge_nodes ADD COLUMN IF NOT EXISTS event_id VARCHAR;"))
             conn.execute(text("ALTER TABLE event_nodes ADD COLUMN IF NOT EXISTS person_id VARCHAR;"))
             conn.execute(text("ALTER TABLE event_nodes ADD COLUMN IF NOT EXISTS work_item_id VARCHAR;"))
+            conn.execute(text("ALTER TABLE meetings ADD COLUMN IF NOT EXISTS platform VARCHAR DEFAULT 'google_meet';"))
+            conn.execute(text("ALTER TABLE meetings ADD COLUMN IF NOT EXISTS meeting_url VARCHAR;"))
+            conn.execute(text("ALTER TABLE meetings ADD COLUMN IF NOT EXISTS native_meeting_id VARCHAR;"))
+            conn.execute(text("ALTER TABLE meetings ADD COLUMN IF NOT EXISTS vexa_meeting_id VARCHAR;"))
             conn.commit()
         Base.metadata.create_all(bind=engine)
         print("[DB INIT] Database tables and extensions verified successfully.")
