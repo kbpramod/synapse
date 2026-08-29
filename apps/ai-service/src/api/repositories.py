@@ -9,7 +9,7 @@ from src.db.session import get_db
 from src.models.doc_page import DocPage
 from src.models.knowledge_node import KnowledgeNode
 from src.models.repository import Repository
-from src.models.user import User
+from models.user import User
 from src.schemas.repository import (
     DocPageResponse,
     QueryRequest,

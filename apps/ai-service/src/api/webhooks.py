@@ -12,7 +12,7 @@ from src.db.session import get_db
 from src.models.doc_page import DocPage
 from src.models.knowledge_node import KnowledgeNode
 from src.models.repository import Repository, GithubRepository
-from src.models.user import User
+from models.user import User
 from src.models.github_installation import GithubInstallation
 from src.schemas.event import EventCreate
 from src.repositories.event_repository import event_repository

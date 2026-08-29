@@ -3,9 +3,12 @@ from typing import Optional, List
 from fastapi import APIRouter, Depends, HTTPException, BackgroundTasks, status
 from sqlalchemy.orm import Session
 
-from src.db.session import get_db
-from src.models.meeting import Meeting
-from src.schemas.meeting import (
+from db.session import get_db
+from models.meeting import Meeting
+from models.user import User
+from api.deps import require_auth
+from schemas.meeting import (
+    JoinMeetingRequest,
     StartMeetingRequest,
     StartMeetingResponse,
     CanonicalTranscriptResponse,
@@ -14,8 +17,8 @@ from src.schemas.meeting import (
     MeetingAcceptedResponse,
     MeetingDetailResponse
 )
-from src.services.meeting_service import meeting_service
-from src.transcription.exceptions import (
+from services.meeting_service import meeting_service
+from transcription.exceptions import (
     InvalidMeetingUrlError,
     ConfigurationError,
     ProviderAuthError,
@@ -41,17 +44,18 @@ v1_router = APIRouter(prefix="/api/v1/meetings", tags=["Meetings"])
     summary="Start meeting transcription with Vexa bot"
 )
 @v1_router.post(
-    "/start",
+    "/join",
     response_model=StartMeetingResponse,
     status_code=status.HTTP_201_CREATED,
     summary="Start meeting transcription with Vexa bot (alias)"
 )
-async def start_meeting(
-    request: StartMeetingRequest,
+async def join_meeting(
+    request: JoinMeetingRequest,
+    user: User = Depends(require_auth),
     db: Session = Depends(get_db)
 ):
     """
-    Accepts a Google Meet URL, extracts the native meeting ID,
+    Accepts a Meet URL, extracts the native meeting ID,
     dispatches a Vexa transcription bot, and creates a local meeting record.
     
     Returns our internal meeting UUID and initial 'joining' status.
@@ -61,7 +65,8 @@ async def start_meeting(
         meeting = await meeting_service.start_vexa_meeting(
             db=db,
             meeting_url=request.meeting_url,
-            title=request.title
+            bot_name=request.bot_name,
+            user=user
         )
 
         return StartMeetingResponse(

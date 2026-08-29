@@ -9,7 +9,7 @@ from src.db.database import Base
 
 if TYPE_CHECKING:
     from src.models.organization import Organization
-    from src.models.user import User
+    from models.user import User
 
 
 class OrganizationMember(Base):

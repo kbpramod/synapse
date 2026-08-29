@@ -4,7 +4,7 @@ from sqlalchemy.orm import Session
 from src.api.deps import require_auth
 from src.db.session import get_db
 from src.models.project import Project
-from src.models.user import User
+from models.user import User
 from src.schemas.onboarding import ProjectResponse
 
 router = APIRouter(prefix="/api/projects", tags=["Projects Workspace"])

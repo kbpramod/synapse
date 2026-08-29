@@ -7,6 +7,12 @@ from pydantic import BaseModel, Field, ConfigDict
 # 1. Direct Vexa / Start Meeting Flow Models
 # ==========================================
 
+class JoinMeetingRequest(BaseModel):
+    """Request to join a Meet meeting and start transcription."""
+    meeting_url: str = Field(..., alias="meeting_url", description="Meet URL")
+    bot_name: str = Field(..., alias="bot_name", description="Bot name")
+    
+
 class StartMeetingRequest(BaseModel):
     """Payload to start meeting transcription by dispatching a bot."""
     meeting_url: str = Field(..., alias="meetingUrl", description="Google Meet URL")

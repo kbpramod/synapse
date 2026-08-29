@@ -14,7 +14,7 @@ load_dotenv()
 
 # Import Base and all SQLAlchemy models for autogenerate support
 from src.db.database import Base
-from src.models.user import User
+from models.user import User
 from src.models.organization import Organization
 from src.models.organization_member import OrganizationMember
 from src.models.project import Project
@@ -32,7 +32,7 @@ from src.models.github_user import GithubUser
 from src.models.pull_request import PullRequest
 from src.models.commit import Commit
 from src.models.fact import Fact
-from src.models.meeting import Meeting
+from models.meeting import Meeting
 
 # Alembic Config object
 config = context.config

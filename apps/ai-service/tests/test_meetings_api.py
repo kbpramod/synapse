@@ -8,7 +8,7 @@ from sqlalchemy.pool import StaticPool
 from src.main import app
 from src.db.database import Base
 from src.db.session import get_db
-from src.models.meeting import Meeting
+from models.meeting import Meeting
 from src.transcription.base import ProviderBotInfo
 from src.transcription.models import CanonicalTranscript, CanonicalTranscriptSegment
 from src.transcription.exceptions import (

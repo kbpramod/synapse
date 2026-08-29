@@ -9,7 +9,7 @@ from src.db.database import Base
 
 if TYPE_CHECKING:
     from src.models.github_installation import GithubInstallation
-    from src.models.user import User
+    from models.user import User
     from src.models.doc_page import DocPage
 
 

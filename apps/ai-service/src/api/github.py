@@ -12,7 +12,7 @@ from src.models.github_install_state import GithubInstallState
 from src.models.github_installation import GithubInstallation
 from src.models.organization_member import OrganizationMember
 from src.models.repository import Repository, GithubRepository
-from src.models.user import User
+from models.user import User
 from src.services.github_service import (
     fetch_installation_repositories,
     sync_installation_all_repositories,

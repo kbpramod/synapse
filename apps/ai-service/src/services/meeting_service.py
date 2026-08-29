@@ -4,8 +4,9 @@ from typing import Optional, List, Dict, Any, Tuple
 from uuid import uuid4
 from sqlalchemy.orm import Session
 
-from src.db.database import SessionLocal
-from src.models.meeting import Meeting
+from db.database import SessionLocal
+from models.meeting import Meeting
+from models.user import User
 from src.models.event_node import EventNode
 from src.models.knowledge_node import KnowledgeNode
 from src.models.work_item import WorkItem
@@ -30,6 +31,8 @@ class MeetingService:
         self,
         db: Session,
         meeting_url: str,
+        bot_name: str,
+        user: User,
         title: Optional[str] = None
     ) -> Meeting:
         """

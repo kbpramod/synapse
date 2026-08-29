@@ -4,20 +4,26 @@ from fastapi import Depends, HTTPException, Request, status
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from sqlalchemy.orm import Session
 
-from src.db.session import get_db
-from src.models.user import User
+try:
+    from src.db.session import get_db
+    from models.user import User
+except ImportError:
+    from db.session import get_db
+    from models.user import User
 
 security = HTTPBearer(auto_error=False)
 
 
 def format_pem_key(key_str: str) -> str:
-    """Format PEM key string if lines are flattened in environment variable."""
+    """Format PEM key string if lines are flattened or unformatted in environment variable."""
     if not key_str:
         return ""
-    key_str = key_str.strip()
-    if "-----BEGIN PUBLIC KEY-----" in key_str:
-        # Restore newlines if passed as single line with escaped or whitespace newlines
+    key_str = key_str.strip().strip('"\'')
+    if "\\n" in key_str:
         key_str = key_str.replace("\\n", "\n")
+    if "-----BEGIN PUBLIC KEY-----" not in key_str:
+        # Wrap raw base64 key
+        key_str = f"-----BEGIN PUBLIC KEY-----\n{key_str}\n-----END PUBLIC KEY-----"
     return key_str
 
 
@@ -94,16 +100,77 @@ async def get_current_user(
     user = db.query(User).filter(User.clerk_user_id == clerk_user_id).first()
 
     if not user:
+        name = payload.get("name")
+        if not name:
+            fname = payload.get("first_name", "") or ""
+            lname = payload.get("last_name", "") or ""
+            name = f"{fname} {lname}".strip() or None
+
         user = User(
             clerk_user_id=clerk_user_id,
-            email=payload.get("email") or payload.get("primary_email_address")
+            email=payload.get("email") or payload.get("primary_email_address"),
+            name=name
         )
         db.add(user)
-        db.commit()
-        db.refresh(user)
+        try:
+            db.commit()
+            db.refresh(user)
+        except Exception:
+            db.rollback()
+            # If concurrent request provisioned user, fetch existing
+            user = db.query(User).filter(User.clerk_user_id == clerk_user_id).first()
+            if not user:
+                raise
 
     return user
 
 
-# Alias require_auth dependency
+async def get_optional_user(
+    request: Request,
+    auth_credentials: HTTPAuthorizationCredentials | None = Depends(security),
+    db: Session = Depends(get_db)
+) -> User | None:
+    """FastAPI dependency to optionally authenticate user if token is present."""
+    token = None
+    if auth_credentials:
+        token = auth_credentials.credentials
+    if not token:
+        token = request.cookies.get("__session")
+    if not token:
+        return None
+
+    try:
+        payload = decode_clerk_token(token)
+        clerk_user_id = payload.get("sub")
+        if not clerk_user_id:
+            return None
+
+        user = db.query(User).filter(User.clerk_user_id == clerk_user_id).first()
+        if not user:
+            name = payload.get("name")
+            if not name:
+                fname = payload.get("first_name", "") or ""
+                lname = payload.get("last_name", "") or ""
+                name = f"{fname} {lname}".strip() or None
+
+            user = User(
+                clerk_user_id=clerk_user_id,
+                email=payload.get("email") or payload.get("primary_email_address"),
+                name=name
+            )
+            db.add(user)
+            try:
+                db.commit()
+                db.refresh(user)
+            except Exception:
+                db.rollback()
+                user = db.query(User).filter(User.clerk_user_id == clerk_user_id).first()
+
+        return user
+    except Exception:
+        return None
+
+
+# Dependency aliases
 require_auth = get_current_user
+optional_auth = get_optional_user
