@@ -7,18 +7,14 @@ from typing import Any, Dict, List, Optional
 from config import is_headless, DEFAULT_TEST_TIMEOUT_S
 
 
-def run_playwright_ts_test(
+def run_test_script(
     test_file_path: str,
     timeout_s: int = DEFAULT_TEST_TIMEOUT_S,
-    headed: Optional[bool] = None,
     cwd: Optional[str] = None,
     env_vars: Optional[Dict[str, str]] = None,
+    headed: Optional[bool] = None,
 ) -> Dict[str, Any]:
-    """
-    Executes a Playwright TypeScript (.spec.ts) or JavaScript (.spec.js) test
-    using npx playwright test.
-    Honors headed/headless mode and captures stdout, stderr, exit code, and screenshots.
-    """
+    """Executes a Python Playwright test script in an isolated subprocess."""
     test_path = Path(test_file_path).resolve()
     if not test_path.exists():
         return {
@@ -38,29 +34,22 @@ def run_playwright_ts_test(
 
     run_headless = is_headless(override=None if headed is None else not headed)
 
-    # Construct the npx playwright command
-    # Windows uses cmd.exe /c npx or npx.cmd
-    cmd = ["npx", "playwright", "test", str(test_path)]
-    if not run_headless:
-        cmd.append("--headed")
-
     run_env = os.environ.copy()
-    run_env["CI"] = "1" if run_headless else ""
+    run_env["PYTHONUNBUFFERED"] = "1"
+    run_env["HEADLESS"] = "true" if run_headless else "false"
     if env_vars:
         run_env.update(env_vars)
 
     start_time = time.time()
     try:
-        # Use shell=True on Windows for npx resolution
         process = subprocess.run(
-            cmd,
+            [sys.executable, str(test_path)],
             cwd=working_dir,
             env=run_env,
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
             text=True,
             timeout=timeout_s,
-            shell=True if sys.platform == "win32" else False,
         )
         duration = time.time() - start_time
         exit_code = process.returncode
@@ -68,22 +57,17 @@ def run_playwright_ts_test(
         stderr = process.stderr or ""
         passed = (exit_code == 0)
 
-        # Parse error summary from output
+        # Parse error summary from output for self-healing and analysis
         error_summary = None
         if not passed:
             lines = [l.strip() for l in (stderr or stdout).splitlines() if l.strip()]
             error_lines = [
                 l for l in lines
-                if any(k in l.lower() for k in ("error:", "expect(", "failed", "timeout", "timed out"))
+                if any(k in l.lower() for k in ("error:", "exception:", "assertionerror", "failed", "timeout", "timed out"))
             ]
-            error_summary = error_lines[-1] if error_lines else (lines[-1] if lines else "Test failed")
+            error_summary = error_lines[-1] if error_lines else (lines[-1] if lines else "Execution failed")
 
-        # Discover any screenshots produced in the test folder
-        screenshots: List[str] = []
-        for img in Path(working_dir).glob("**/*.png"):
-            screenshots.append(str(img))
-
-        # Discover any traces
+        screenshots: List[str] = [str(img) for img in Path(working_dir).glob("**/*.png")]
         traces = list(Path(working_dir).glob("**/*.zip"))
         trace_path = str(traces[0]) if traces else None
 
@@ -97,7 +81,6 @@ def run_playwright_ts_test(
             "trace_path": trace_path,
             "screenshot_paths": screenshots,
         }
-
     except subprocess.TimeoutExpired as e:
         duration = time.time() - start_time
         return {
@@ -111,42 +94,13 @@ def run_playwright_ts_test(
             "screenshot_paths": [],
         }
     except Exception as e:
-        duration = time.time() - start_time
         return {
             "exit_code": 1,
             "passed": False,
             "stdout": "",
             "stderr": str(e),
-            "duration_s": round(duration, 2),
+            "duration_s": round(time.time() - start_time, 2),
             "error_summary": str(e),
             "trace_path": None,
             "screenshot_paths": [],
         }
-
-
-def run_test_script(
-    test_file_path: str,
-    timeout_s: int = DEFAULT_TEST_TIMEOUT_S,
-    env_vars: Optional[Dict[str, str]] = None,
-    cwd: Optional[str] = None,
-    headed: Optional[bool] = None,
-) -> Dict[str, Any]:
-    """Unified entry point dispatching to Playwright TS runner or Python runner."""
-    if test_file_path.endswith(".ts") or test_file_path.endswith(".js"):
-        return run_playwright_ts_test(
-            test_file_path,
-            timeout_s=timeout_s,
-            headed=headed,
-            cwd=cwd,
-            env_vars=env_vars,
-        )
-
-    # Fallback to python script execution if file is .py
-    from runner.python_runner import run_python_test_script
-    return run_python_test_script(
-        test_file_path,
-        timeout_s=timeout_s,
-        cwd=cwd,
-        env_vars=env_vars,
-        headed=headed,
-    )

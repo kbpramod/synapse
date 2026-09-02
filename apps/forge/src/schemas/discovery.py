@@ -11,6 +11,7 @@ class BoundingBox(BaseModel):
 
 
 class ButtonElement(BaseModel):
+    forge_id: Optional[str] = None
     text: str
     role: str = "button"
     type: str = "button"
@@ -23,6 +24,7 @@ class ButtonElement(BaseModel):
 
 
 class InputElement(BaseModel):
+    forge_id: Optional[str] = None
     type: str = "text"
     name: Optional[str] = None
     id: Optional[str] = None
@@ -38,6 +40,7 @@ class InputElement(BaseModel):
 
 
 class TextareaElement(BaseModel):
+    forge_id: Optional[str] = None
     name: Optional[str] = None
     id: Optional[str] = None
     placeholder: Optional[str] = None
@@ -57,6 +60,7 @@ class SelectOption(BaseModel):
 
 
 class SelectElement(BaseModel):
+    forge_id: Optional[str] = None
     name: Optional[str] = None
     id: Optional[str] = None
     label: Optional[str] = None
@@ -69,6 +73,7 @@ class SelectElement(BaseModel):
 
 
 class LinkElement(BaseModel):
+    forge_id: Optional[str] = None
     text: str
     href: str
     raw_href: Optional[str] = None

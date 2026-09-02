@@ -82,6 +82,11 @@ except (ImportError, ValueError):
         save_site_discovery,
     )
 
+try:
+    from config import is_headless
+except (ImportError, ValueError):
+    from ..config import is_headless
+
 logger = logging.getLogger("forge.discovery")
 
 TRACKING_QUERY_PARAMS = {
@@ -158,11 +163,19 @@ DOM_EXTRACTION_SCRIPT = """() => {
         return null;
     };
 
+    const toSlug = (str, fallback) => {
+        if (!str) return fallback;
+        const cleaned = String(str).toLowerCase().replace(/[^a-z0-9]+/g, '_').replace(/^_+|_+$/g, '').slice(0, 20);
+        return cleaned || fallback;
+    };
+
     // 1. Buttons
     const buttons = [];
-    document.querySelectorAll('button, input[type="button"], input[type="submit"], input[type="reset"], [role="button"], a.btn, a.button').forEach(el => {
+    document.querySelectorAll('button, input[type="button"], input[type="submit"], input[type="reset"], [role="button"], a.btn, a.button').forEach((el, idx) => {
         const text = el.innerText ? el.innerText.trim() : (el.value || el.getAttribute('aria-label') || el.getAttribute('title') || '');
+        const forgeId = el.id ? `btn_${toSlug(el.id, 'id')}` : `btn_${toSlug(text, 'action')}_${idx + 1}`;
         buttons.push({
+            forge_id: forgeId,
             text: text,
             role: el.getAttribute('role') || (el.tagName.toLowerCase() === 'button' ? 'button' : el.tagName.toLowerCase()),
             type: el.type || 'button',
@@ -177,10 +190,12 @@ DOM_EXTRACTION_SCRIPT = """() => {
 
     // 2. Links
     const links = [];
-    document.querySelectorAll('a[href]').forEach(el => {
+    document.querySelectorAll('a[href]').forEach((el, idx) => {
         const rawHref = el.getAttribute('href') || '';
         const text = el.innerText ? el.innerText.trim() : (el.getAttribute('aria-label') || el.getAttribute('title') || '');
+        const forgeId = el.id ? `lnk_${toSlug(el.id, 'id')}` : `lnk_${toSlug(text, 'nav')}_${idx + 1}`;
         links.push({
+            forge_id: forgeId,
             text: text,
             href: el.href || rawHref,
             raw_href: rawHref,
@@ -194,13 +209,16 @@ DOM_EXTRACTION_SCRIPT = """() => {
 
     // 3. Inputs
     const inputs = [];
-    document.querySelectorAll('input:not([type="button"]):not([type="submit"]):not([type="reset"]):not([type="hidden"])').forEach(el => {
+    document.querySelectorAll('input:not([type="button"]):not([type="submit"]):not([type="reset"]):not([type="hidden"])').forEach((el, idx) => {
+        const labelText = getLabel(el);
+        const forgeId = el.id ? `inp_${toSlug(el.id, 'id')}` : `inp_${toSlug(el.name || el.placeholder || labelText, 'field')}_${idx + 1}`;
         inputs.push({
+            forge_id: forgeId,
             type: el.type || 'text',
             name: el.name || null,
             id: el.id || null,
             placeholder: el.placeholder || null,
-            label: getLabel(el),
+            label: labelText,
             value: el.value || '',
             required: el.required || el.hasAttribute('required'),
             disabled: el.disabled || el.hasAttribute('disabled'),
@@ -213,12 +231,15 @@ DOM_EXTRACTION_SCRIPT = """() => {
 
     // 4. Textareas
     const textareas = [];
-    document.querySelectorAll('textarea').forEach(el => {
+    document.querySelectorAll('textarea').forEach((el, idx) => {
+        const labelText = getLabel(el);
+        const forgeId = el.id ? `txt_${toSlug(el.id, 'id')}` : `txt_${toSlug(el.name || el.placeholder || labelText, 'area')}_${idx + 1}`;
         textareas.push({
+            forge_id: forgeId,
             name: el.name || null,
             id: el.id || null,
             placeholder: el.placeholder || null,
-            label: getLabel(el),
+            label: labelText,
             value: el.value || '',
             required: el.required || el.hasAttribute('required'),
             disabled: el.disabled || el.hasAttribute('disabled'),
@@ -230,18 +251,22 @@ DOM_EXTRACTION_SCRIPT = """() => {
 
     // 5. Selects
     const selects = [];
-    document.querySelectorAll('select, [role="combobox"], [role="listbox"]').forEach(el => {
-        const options = el.tagName.toLowerCase() === 'select'
-            ? Array.from(el.options || []).map(o => ({
-                text: o.text.trim(),
-                value: o.value,
-                selected: o.selected
-            }))
-            : [];
+    document.querySelectorAll('select').forEach((el, idx) => {
+        const labelText = getLabel(el);
+        const forgeId = el.id ? `sel_${toSlug(el.id, 'id')}` : `sel_${toSlug(el.name || labelText, 'select')}_${idx + 1}`;
+        const options = [];
+        el.querySelectorAll('option').forEach(opt => {
+            options.push({
+                text: opt.innerText ? opt.innerText.trim() : opt.value,
+                value: opt.value,
+                selected: opt.selected
+            });
+        });
         selects.push({
+            forge_id: forgeId,
             name: el.name || null,
             id: el.id || null,
-            label: getLabel(el),
+            label: labelText,
             options: options,
             disabled: el.disabled || el.hasAttribute('disabled'),
             required: el.required || el.hasAttribute('required'),
@@ -504,7 +529,7 @@ async def discover_page_in_context(
 async def discover_page(
     url: str,
     state_info: Optional[StateInfo] = None,
-    headless: bool = True,
+    headless: Optional[bool] = None,
     viewport_width: int = 1280,
     viewport_height: int = 800,
     timeout_ms: int = 30000,
@@ -514,8 +539,9 @@ async def discover_page(
     """
     Stand-alone async single page discovery.
     """
+    run_headless = is_headless(override=headless)
     async with async_playwright() as p:
-        browser = await p.chromium.launch(headless=headless)
+        browser = await p.chromium.launch(headless=run_headless)
         context = await browser.new_context(
             viewport={"width": viewport_width, "height": viewport_height},
             user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
@@ -538,7 +564,7 @@ async def discover_page(
 def discover_page_sync(
     url: str,
     state_info: Optional[StateInfo] = None,
-    headless: bool = True,
+    headless: Optional[bool] = None,
     viewport_width: int = 1280,
     viewport_height: int = 800,
     timeout_ms: int = 30000,
@@ -588,8 +614,9 @@ class SiteDiscoverer:
             is_authenticated=self.config.is_authenticated
         )
 
+        run_headless = is_headless(override=getattr(self.config, "headless", None))
         async with async_playwright() as p:
-            browser = await p.chromium.launch(headless=True)
+            browser = await p.chromium.launch(headless=run_headless)
             context = await browser.new_context(
                 viewport={"width": 1280, "height": 800},
                 user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"

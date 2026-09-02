@@ -1,0 +1,1 @@
+update documentation of the project in docs folder
