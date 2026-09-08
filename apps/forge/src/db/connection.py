@@ -38,7 +38,6 @@ def get_connection() -> Generator[Connection, None, None]:
     """
     engine = get_engine()
     with engine.begin() as conn:
-        # Guarantee we operate safely within the forge schema
         conn.execute(text("CREATE SCHEMA IF NOT EXISTS forge;"))
         conn.execute(text("SET search_path TO forge, public;"))
         yield conn

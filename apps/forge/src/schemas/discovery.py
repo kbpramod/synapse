@@ -10,6 +10,14 @@ class BoundingBox(BaseModel):
     height: int
 
 
+# Three Canonical Fixed Viewports for Responsive Testing
+FIXED_VIEWPORTS: Dict[str, Dict[str, int]] = {
+    "desktop": {"width": 1280, "height": 800},
+    "tablet": {"width": 768, "height": 1024},
+    "mobile": {"width": 375, "height": 667},
+}
+
+
 class ButtonElement(BaseModel):
     forge_id: Optional[str] = None
     text: str
@@ -19,6 +27,9 @@ class ButtonElement(BaseModel):
     name: Optional[str] = None
     visible: bool = True
     enabled: bool = True
+    in_viewport: bool = False
+    visible_viewports: List[str] = Field(default_factory=lambda: ["desktop"])
+    viewport_visibility: Dict[str, bool] = Field(default_factory=dict)
     selector: str
     bounding_box: Optional[BoundingBox] = None
 
@@ -35,6 +46,9 @@ class InputElement(BaseModel):
     disabled: bool = False
     checked: Optional[bool] = None
     visible: bool = True
+    in_viewport: bool = False
+    visible_viewports: List[str] = Field(default_factory=lambda: ["desktop"])
+    viewport_visibility: Dict[str, bool] = Field(default_factory=dict)
     selector: str
     bounding_box: Optional[BoundingBox] = None
 
@@ -49,6 +63,9 @@ class TextareaElement(BaseModel):
     required: bool = False
     disabled: bool = False
     visible: bool = True
+    in_viewport: bool = False
+    visible_viewports: List[str] = Field(default_factory=lambda: ["desktop"])
+    viewport_visibility: Dict[str, bool] = Field(default_factory=dict)
     selector: str
     bounding_box: Optional[BoundingBox] = None
 
@@ -68,6 +85,9 @@ class SelectElement(BaseModel):
     disabled: bool = False
     required: bool = False
     visible: bool = True
+    in_viewport: bool = False
+    visible_viewports: List[str] = Field(default_factory=lambda: ["desktop"])
+    viewport_visibility: Dict[str, bool] = Field(default_factory=dict)
     selector: str
     bounding_box: Optional[BoundingBox] = None
 
@@ -80,6 +100,9 @@ class LinkElement(BaseModel):
     id: Optional[str] = None
     target: Optional[str] = None
     visible: bool = True
+    in_viewport: bool = False
+    visible_viewports: List[str] = Field(default_factory=lambda: ["desktop"])
+    viewport_visibility: Dict[str, bool] = Field(default_factory=dict)
     selector: str
     bounding_box: Optional[BoundingBox] = None
 
@@ -92,6 +115,9 @@ class FormElement(BaseModel):
     input_count: int = 0
     button_count: int = 0
     visible: bool = True
+    in_viewport: bool = False
+    visible_viewports: List[str] = Field(default_factory=lambda: ["desktop"])
+    viewport_visibility: Dict[str, bool] = Field(default_factory=dict)
     selector: str
     bounding_box: Optional[BoundingBox] = None
 
@@ -101,6 +127,9 @@ class DialogElement(BaseModel):
     role: str = "dialog"
     title: Optional[str] = None
     visible: bool = False
+    in_viewport: bool = False
+    visible_viewports: List[str] = Field(default_factory=lambda: ["desktop"])
+    viewport_visibility: Dict[str, bool] = Field(default_factory=dict)
     selector: str
     bounding_box: Optional[BoundingBox] = None
 
@@ -114,8 +143,21 @@ class ImageElement(BaseModel):
     alt: Optional[str] = None
     src: Optional[str] = None
     visible: bool = True
+    in_viewport: bool = False
+    visible_viewports: List[str] = Field(default_factory=lambda: ["desktop"])
+    viewport_visibility: Dict[str, bool] = Field(default_factory=dict)
     selector: str
     bounding_box: Optional[BoundingBox] = None
+
+
+class ViewportSummary(BaseModel):
+    desktop_only_count: int = 0
+    tablet_only_count: int = 0
+    mobile_only_count: int = 0
+    all_viewports_count: int = 0
+    desktop_only_selectors: List[str] = Field(default_factory=list)
+    mobile_only_selectors: List[str] = Field(default_factory=list)
+    tablet_only_selectors: List[str] = Field(default_factory=list)
 
 
 class DiscoveredElements(BaseModel):
@@ -128,6 +170,7 @@ class DiscoveredElements(BaseModel):
     dialogs: List[DialogElement] = Field(default_factory=list)
     headings: List[HeadingElement] = Field(default_factory=list)
     images: List[ImageElement] = Field(default_factory=list)
+    viewports_summary: Optional[ViewportSummary] = None
 
 
 class Viewport(BaseModel):

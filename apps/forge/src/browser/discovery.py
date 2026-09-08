@@ -20,6 +20,7 @@ try:
         DiscoveredElements,
         DiscoveryResult,
         FailedRequest,
+        FIXED_VIEWPORTS,
         FormElement,
         HeadingElement,
         ImageElement,
@@ -37,6 +38,7 @@ try:
         TextareaElement,
         TextSummary,
         Viewport,
+        ViewportSummary,
     )
     from storage.local import (
         get_page_folder,
@@ -55,6 +57,7 @@ except (ImportError, ValueError):
         DiscoveredElements,
         DiscoveryResult,
         FailedRequest,
+        FIXED_VIEWPORTS,
         FormElement,
         HeadingElement,
         ImageElement,
@@ -72,6 +75,7 @@ except (ImportError, ValueError):
         TextareaElement,
         TextSummary,
         Viewport,
+        ViewportSummary,
     )
     from ..storage.local import (
         get_page_folder,
@@ -110,6 +114,27 @@ DOM_EXTRACTION_SCRIPT = """() => {
             y: Math.round(r.y),
             width: Math.round(r.width),
             height: Math.round(r.height)
+        };
+    };
+
+    const isInViewport = (el) => {
+        if (!isVisible(el)) return false;
+        const r = el.getBoundingClientRect();
+        return (
+            r.bottom > 0 &&
+            r.right > 0 &&
+            r.top < window.innerHeight &&
+            r.left < window.innerWidth
+        );
+    };
+
+    const makeVpProps = (el) => {
+        const vis = isVisible(el);
+        return {
+            visible: vis,
+            in_viewport: vis ? isInViewport(el) : false,
+            visible_viewports: vis ? ['desktop'] : [],
+            viewport_visibility: { desktop: vis }
         };
     };
 
@@ -174,6 +199,7 @@ DOM_EXTRACTION_SCRIPT = """() => {
     document.querySelectorAll('button, input[type="button"], input[type="submit"], input[type="reset"], [role="button"], a.btn, a.button').forEach((el, idx) => {
         const text = el.innerText ? el.innerText.trim() : (el.value || el.getAttribute('aria-label') || el.getAttribute('title') || '');
         const forgeId = el.id ? `btn_${toSlug(el.id, 'id')}` : `btn_${toSlug(text, 'action')}_${idx + 1}`;
+        const vp = makeVpProps(el);
         buttons.push({
             forge_id: forgeId,
             text: text,
@@ -181,7 +207,10 @@ DOM_EXTRACTION_SCRIPT = """() => {
             type: el.type || 'button',
             id: el.id || null,
             name: el.name || null,
-            visible: isVisible(el),
+            visible: vp.visible,
+            in_viewport: vp.in_viewport,
+            visible_viewports: vp.visible_viewports,
+            viewport_visibility: vp.viewport_visibility,
             enabled: !el.disabled && !el.hasAttribute('disabled') && el.getAttribute('aria-disabled') !== 'true',
             selector: getBestSelector(el),
             bounding_box: getRect(el)
@@ -194,6 +223,7 @@ DOM_EXTRACTION_SCRIPT = """() => {
         const rawHref = el.getAttribute('href') || '';
         const text = el.innerText ? el.innerText.trim() : (el.getAttribute('aria-label') || el.getAttribute('title') || '');
         const forgeId = el.id ? `lnk_${toSlug(el.id, 'id')}` : `lnk_${toSlug(text, 'nav')}_${idx + 1}`;
+        const vp = makeVpProps(el);
         links.push({
             forge_id: forgeId,
             text: text,
@@ -201,7 +231,10 @@ DOM_EXTRACTION_SCRIPT = """() => {
             raw_href: rawHref,
             id: el.id || null,
             target: el.target || null,
-            visible: isVisible(el),
+            visible: vp.visible,
+            in_viewport: vp.in_viewport,
+            visible_viewports: vp.visible_viewports,
+            viewport_visibility: vp.viewport_visibility,
             selector: getBestSelector(el),
             bounding_box: getRect(el)
         });
@@ -212,6 +245,7 @@ DOM_EXTRACTION_SCRIPT = """() => {
     document.querySelectorAll('input:not([type="button"]):not([type="submit"]):not([type="reset"]):not([type="hidden"])').forEach((el, idx) => {
         const labelText = getLabel(el);
         const forgeId = el.id ? `inp_${toSlug(el.id, 'id')}` : `inp_${toSlug(el.name || el.placeholder || labelText, 'field')}_${idx + 1}`;
+        const vp = makeVpProps(el);
         inputs.push({
             forge_id: forgeId,
             type: el.type || 'text',
@@ -223,7 +257,10 @@ DOM_EXTRACTION_SCRIPT = """() => {
             required: el.required || el.hasAttribute('required'),
             disabled: el.disabled || el.hasAttribute('disabled'),
             checked: el.type === 'checkbox' || el.type === 'radio' ? el.checked : null,
-            visible: isVisible(el),
+            visible: vp.visible,
+            in_viewport: vp.in_viewport,
+            visible_viewports: vp.visible_viewports,
+            viewport_visibility: vp.viewport_visibility,
             selector: getBestSelector(el),
             bounding_box: getRect(el)
         });
@@ -234,6 +271,7 @@ DOM_EXTRACTION_SCRIPT = """() => {
     document.querySelectorAll('textarea').forEach((el, idx) => {
         const labelText = getLabel(el);
         const forgeId = el.id ? `txt_${toSlug(el.id, 'id')}` : `txt_${toSlug(el.name || el.placeholder || labelText, 'area')}_${idx + 1}`;
+        const vp = makeVpProps(el);
         textareas.push({
             forge_id: forgeId,
             name: el.name || null,
@@ -243,7 +281,10 @@ DOM_EXTRACTION_SCRIPT = """() => {
             value: el.value || '',
             required: el.required || el.hasAttribute('required'),
             disabled: el.disabled || el.hasAttribute('disabled'),
-            visible: isVisible(el),
+            visible: vp.visible,
+            in_viewport: vp.in_viewport,
+            visible_viewports: vp.visible_viewports,
+            viewport_visibility: vp.viewport_visibility,
             selector: getBestSelector(el),
             bounding_box: getRect(el)
         });
@@ -262,6 +303,7 @@ DOM_EXTRACTION_SCRIPT = """() => {
                 selected: opt.selected
             });
         });
+        const vp = makeVpProps(el);
         selects.push({
             forge_id: forgeId,
             name: el.name || null,
@@ -270,7 +312,10 @@ DOM_EXTRACTION_SCRIPT = """() => {
             options: options,
             disabled: el.disabled || el.hasAttribute('disabled'),
             required: el.required || el.hasAttribute('required'),
-            visible: isVisible(el),
+            visible: vp.visible,
+            in_viewport: vp.in_viewport,
+            visible_viewports: vp.visible_viewports,
+            viewport_visibility: vp.viewport_visibility,
             selector: getBestSelector(el),
             bounding_box: getRect(el)
         });
@@ -279,6 +324,7 @@ DOM_EXTRACTION_SCRIPT = """() => {
     // 6. Forms
     const forms = [];
     document.querySelectorAll('form').forEach(el => {
+        const vp = makeVpProps(el);
         forms.push({
             id: el.id || null,
             name: el.name || null,
@@ -286,7 +332,10 @@ DOM_EXTRACTION_SCRIPT = """() => {
             method: (el.method || 'GET').toUpperCase(),
             input_count: el.querySelectorAll('input, textarea, select').length,
             button_count: el.querySelectorAll('button, input[type="submit"]').length,
-            visible: isVisible(el),
+            visible: vp.visible,
+            in_viewport: vp.in_viewport,
+            visible_viewports: vp.visible_viewports,
+            viewport_visibility: vp.viewport_visibility,
             selector: getBestSelector(el),
             bounding_box: getRect(el)
         });
@@ -295,11 +344,15 @@ DOM_EXTRACTION_SCRIPT = """() => {
     // 7. Dialogs & Modals
     const dialogs = [];
     document.querySelectorAll('dialog, [role="dialog"], [role="alertdialog"], .modal, .popup').forEach(el => {
+        const vp = makeVpProps(el);
         dialogs.push({
             id: el.id || null,
             role: el.getAttribute('role') || el.tagName.toLowerCase(),
             title: el.getAttribute('aria-label') || el.querySelector('h1, h2, h3, h4, [class*="title"]')?.innerText?.trim() || null,
-            visible: isVisible(el),
+            visible: vp.visible,
+            in_viewport: vp.in_viewport,
+            visible_viewports: vp.visible_viewports,
+            viewport_visibility: vp.viewport_visibility,
             selector: getBestSelector(el),
             bounding_box: getRect(el)
         });
@@ -319,10 +372,14 @@ DOM_EXTRACTION_SCRIPT = """() => {
     // 9. Images
     const images = [];
     document.querySelectorAll('img[src], svg[aria-label]').forEach(el => {
+        const vp = makeVpProps(el);
         images.push({
             alt: el.getAttribute('alt') || el.getAttribute('aria-label') || null,
             src: el.src || el.getAttribute('src') || null,
-            visible: isVisible(el),
+            visible: vp.visible,
+            in_viewport: vp.in_viewport,
+            visible_viewports: vp.visible_viewports,
+            viewport_visibility: vp.viewport_visibility,
             selector: getBestSelector(el),
             bounding_box: getRect(el)
         });
@@ -435,6 +492,124 @@ def is_internal_same_domain(
         return False
 
 
+CHECK_VIEWPORT_ELEMENTS_SCRIPT = """(items) => {
+    const isVisible = (el) => {
+        if (!el) return false;
+        const style = window.getComputedStyle(el);
+        if (style.display === 'none' || style.visibility === 'hidden' || style.opacity === '0') return false;
+        const rect = el.getBoundingClientRect();
+        return rect.width > 0 && rect.height > 0;
+    };
+    const isInViewport = (el) => {
+        if (!isVisible(el)) return false;
+        const r = el.getBoundingClientRect();
+        return r.bottom > 0 && r.right > 0 && r.top < window.innerHeight && r.left < window.innerWidth;
+    };
+    const results = {};
+    for (const item of items) {
+        let el = null;
+        if (item.id) {
+            el = document.getElementById(item.id);
+        }
+        if (!el && item.selector) {
+            try { el = document.querySelector(item.selector); } catch(e) {}
+        }
+        const vis = isVisible(el);
+        results[item.key] = {
+            visible: vis,
+            in_viewport: vis ? isInViewport(el) : false
+        };
+    }
+    return results;
+}"""
+
+
+async def inspect_multi_viewports(
+    page: Page,
+    raw_data: Dict[str, Any],
+    base_viewport: Dict[str, int]
+) -> None:
+    """
+    Evaluates visibility of discovered elements across canonical viewports:
+    Desktop (1280x800), Tablet (768x1024), and Mobile (375x667).
+    Populates visible_viewports, viewport_visibility, and viewports_summary.
+    """
+    elements_dict = raw_data.get("elements", {})
+    categories = ["buttons", "inputs", "links", "textareas", "selects", "forms", "dialogs", "images"]
+
+    # Gather items to check
+    items_to_check = []
+    for cat in categories:
+        for idx, el in enumerate(elements_dict.get(cat, [])):
+            key = f"{cat}_{idx}"
+            items_to_check.append({
+                "key": key,
+                "category": cat,
+                "index": idx,
+                "id": el.get("id"),
+                "selector": el.get("selector"),
+            })
+
+    if items_to_check:
+        # Sweep through secondary canonical viewports
+        target_viewports = ["tablet", "mobile"]
+        for vp_name in target_viewports:
+            vp_dims = FIXED_VIEWPORTS[vp_name]
+            try:
+                await page.set_viewport_size(vp_dims)
+                await page.wait_for_timeout(150)  # allow CSS @media reflow
+                res_map = await page.evaluate(CHECK_VIEWPORT_ELEMENTS_SCRIPT, items_to_check)
+
+                for item in items_to_check:
+                    key = item["key"]
+                    cat = item["category"]
+                    idx = item["index"]
+                    res = res_map.get(key, {})
+                    is_vis = res.get("visible", False)
+                    el_obj = elements_dict[cat][idx]
+                    el_obj["viewport_visibility"][vp_name] = is_vis
+                    if is_vis and vp_name not in el_obj["visible_viewports"]:
+                        el_obj["visible_viewports"].append(vp_name)
+            except Exception as e:
+                logger.warning(f"[DISCOVERY] Viewport evaluation failed for {vp_name}: {e}")
+
+        # Restore base viewport
+        try:
+            await page.set_viewport_size(base_viewport)
+            await page.wait_for_timeout(100)
+        except Exception:
+            pass
+
+    # Compute ViewportSummary
+    desktop_only = []
+    tablet_only = []
+    mobile_only = []
+    all_viewports = []
+
+    for cat in categories:
+        for el in elements_dict.get(cat, []):
+            vps = set(el.get("visible_viewports", []))
+            sel = el.get("selector", "")
+            if vps == {"desktop"}:
+                desktop_only.append(sel)
+            elif vps == {"mobile"}:
+                mobile_only.append(sel)
+            elif vps == {"tablet"}:
+                tablet_only.append(sel)
+            elif vps == {"desktop", "tablet", "mobile"}:
+                all_viewports.append(sel)
+
+    elements_dict["viewports_summary"] = {
+        "desktop_only_count": len(desktop_only),
+        "tablet_only_count": len(tablet_only),
+        "mobile_only_count": len(mobile_only),
+        "all_viewports_count": len(all_viewports),
+        "desktop_only_selectors": desktop_only[:20],
+        "mobile_only_selectors": mobile_only[:20],
+        "tablet_only_selectors": tablet_only[:20],
+    }
+
+
 async def discover_page_in_context(
     page: Page,
     url: str,
@@ -492,6 +667,10 @@ async def discover_page_in_context(
     page.remove_listener("requestfailed", handle_reqfailed)
     page.remove_listener("response", handle_response)
 
+    # Multi-viewport sweep: test visibility across Desktop, Tablet, and Mobile
+    base_viewport = {"width": viewport_width, "height": viewport_height}
+    await inspect_multi_viewports(page, raw_data, base_viewport)
+
     # Enrich Page Info
     current_url = page.url
     parsed_current = urlparse(current_url)
@@ -534,18 +713,29 @@ async def discover_page(
     viewport_height: int = 800,
     timeout_ms: int = 30000,
     settle_ms: int = 1500,
-    save_to_storage: bool = False
+    save_to_storage: bool = False,
+    storage_state: Optional[str] = None
 ) -> DiscoveryResult:
     """
     Stand-alone async single page discovery.
+
+    `storage_state` is a path to a Playwright storage state file (cookies + localStorage)
+    saved by a passing test before its browser closed. Pages only reachable behind a login
+    (e.g. a dashboard) can only be discovered by reusing that authenticated session —
+    without it, the fresh context would just be redirected back to the login page.
     """
     run_headless = is_headless(override=headless)
+    context_kwargs = {
+        "viewport": {"width": viewport_width, "height": viewport_height},
+        "user_agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+    }
+    if storage_state and Path(storage_state).exists():
+        context_kwargs["storage_state"] = storage_state
+        logger.info(f"[DISCOVERY] Reusing authenticated session from: {storage_state}")
+
     async with async_playwright() as p:
         browser = await p.chromium.launch(headless=run_headless)
-        context = await browser.new_context(
-            viewport={"width": viewport_width, "height": viewport_height},
-            user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
-        )
+        context = await browser.new_context(**context_kwargs)
         page = await context.new_page()
         result = await discover_page_in_context(
             page=page,
@@ -569,7 +759,8 @@ def discover_page_sync(
     viewport_height: int = 800,
     timeout_ms: int = 30000,
     settle_ms: int = 1500,
-    save_to_storage: bool = False
+    save_to_storage: bool = False,
+    storage_state: Optional[str] = None
 ) -> DiscoveryResult:
     """Synchronous single-page discovery."""
     return asyncio.run(discover_page(
@@ -580,7 +771,8 @@ def discover_page_sync(
         viewport_height=viewport_height,
         timeout_ms=timeout_ms,
         settle_ms=settle_ms,
-        save_to_storage=save_to_storage
+        save_to_storage=save_to_storage,
+        storage_state=storage_state
     ))
 
 

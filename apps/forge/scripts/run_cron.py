@@ -1,10 +1,10 @@
+import argparse
+import asyncio
+import logging
 import os
 import sys
-import uuid
-import logging
-import argparse
-from pathlib import Path
 from datetime import datetime
+from pathlib import Path
 
 # Add src to sys.path
 root_dir = Path(__file__).resolve().parent.parent
@@ -12,129 +12,138 @@ src_dir = root_dir / "src"
 if str(src_dir) not in sys.path:
     sys.path.insert(0, str(src_dir))
 
-from config import is_headless
+from agents.cron_runner import run_cron_cycle, start_cron_scheduler_daemon
 from db.migrations import init_db
 from db.repository import ForgeRepository
-from runner.playwright_runner import run_test_script
 
 logging.basicConfig(
     level=logging.INFO,
     format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
     datefmt="%H:%M:%S",
 )
-logger = logging.getLogger("forge.cron")
+logger = logging.getLogger("forge.cron_cli")
 
 
-def run_hourly_regression(domain: str = None, headed: bool = False, auto_heal: bool = True):
+def print_banner(mode: str, domain: str = None, interval: int = 60, headed: bool = False):
     print("\n" + "=" * 80)
-    print("  FORGE HOURLY REGRESSION RUNNER (Continuous Autonomous QA)")
-    print(f"  Target Scope: {domain or 'ALL ACTIVE APPLICATIONS'}")
-    print(f"  Headless: {not headed} | Auto-Heal: {auto_heal}")
+    print("  FORGE CONTINUOUS CRON TEST SCHEDULER (Autonomous QA Engine)")
+    print(f"  Execution Mode : {mode.upper()}")
+    print(f"  Target Scope   : {domain or 'ALL REGISTERED WEBSITES'}")
+    print(f"  Headless       : {not headed}")
+    if mode == "daemon":
+        print(f"  Poll Interval  : {interval} seconds")
     print("=" * 80 + "\n")
 
-    # Ensure forge schema exists in Neon Postgres
-    init_db()
 
-    # Query active tests from Neon PostgreSQL
+def print_schedule_table(domain: str = None):
+    """Prints the current schedule status of all tests in PostgreSQL."""
+    due_tests = ForgeRepository.get_due_tests(domain=domain)
     active_tests = ForgeRepository.get_active_tests(domain=domain)
-    if not active_tests:
-        print("No active tests found in database. Please run test planning stage first.")
-        return 0
 
-    print(f"Found {len(active_tests)} active test(s) to execute:\n")
+    print("-" * 80)
+    print(f"  SCHEDULE STATUS ({len(active_tests)} Active Tests | {len(due_tests)} Due Now)")
+    print("-" * 80)
     for t in active_tests:
-        print(f"  - [{t['priority'].upper()}] {t['test_id']} ({t['domain']}): {t['title']}")
-    print("\n" + "-" * 80)
-
-    run_batch_id = f"cron_{datetime.utcnow().strftime('%Y%m%d_%H%M%S')}"
-    total = len(active_tests)
-    passed_count = 0
-    failed_count = 0
-    healed_count = 0
-
-    for idx, test in enumerate(active_tests, 1):
-        test_id = test["test_id"]
-        script_path = test.get("script_path")
-        print(f"\n[{idx}/{total}] RUNNING: {test_id} -> {test['title']}")
-
-        if not script_path or not Path(script_path).exists():
-            print(f"  [ERROR] Script file not found: {script_path}")
-            ForgeRepository.record_test_run(
-                run_id=run_batch_id,
-                test_id=test_id,
-                exit_code=1,
-                status="FAILED",
-                duration_s=0.0,
-                error_summary="Test script file missing",
-            )
-            failed_count += 1
-            continue
-
-        exec_res = run_test_script(script_path, headed=headed)
-        passed = exec_res.get("passed", False)
-        exit_code = exec_res.get("exit_code", 1)
-        duration = exec_res.get("duration_s", 0.0)
-        error = exec_res.get("error_summary")
-
-        if passed:
-            print(f"  [PASSED] in {duration}s")
-            ForgeRepository.record_test_run(
-                run_id=run_batch_id,
-                test_id=test_id,
-                exit_code=0,
-                status="PASSED",
-                duration_s=duration,
-                stdout=exec_res.get("stdout", ""),
-                stderr=exec_res.get("stderr", ""),
-            )
-            passed_count += 1
-        else:
-            print(f"  [FAILED] Exit Code {exit_code}: {error}")
-            print(f"  Screenshots captured: {len(exec_res.get('screenshot_paths', []))}")
-
-            # Record initial failure
-            ForgeRepository.record_test_run(
-                run_id=run_batch_id,
-                test_id=test_id,
-                exit_code=exit_code,
-                status="FAILED",
-                duration_s=duration,
-                error_summary=error,
-                stdout=exec_res.get("stdout", ""),
-                stderr=exec_res.get("stderr", ""),
-                screenshot_paths=exec_res.get("screenshot_paths", []),
-            )
-            failed_count += 1
-
-    print("\n" + "=" * 80)
-    print("  HOURLY REGRESSION SUMMARY REPORT")
-    print("=" * 80)
-    print(f"  Total Executed : {total}")
-    print(f"  Passed         : {passed_count}")
-    print(f"  Failed         : {failed_count}")
-    print(f"  Healed         : {healed_count}")
-    print(f"  Health Ratio   : {round((passed_count / total) * 100, 1) if total else 0}%\n")
-
-    summary = ForgeRepository.get_regression_summary(hours=24)
-    print(f"  Last 24h Telemetry across all runs: Total={summary['total_runs']}, Passed={summary['passed_runs']}, Failed={summary['failed_runs']}\n")
-
-    return 0 if failed_count == 0 else 1
+        test_id = t["test_id"]
+        interval = t.get("cron_interval_hours", 24)
+        last_run = t.get("last_run_at") or "Never"
+        next_run = t.get("next_run_at") or "Immediately"
+        is_due = any(d["test_id"] == test_id for d in due_tests)
+        flag = "[DUE NOW]" if is_due else "[SCHEDULED]"
+        print(f"  {flag:12} {test_id:<28} Every {interval}h | Last: {str(last_run)[:19]} | Next: {str(next_run)[:19]}")
+    print("-" * 80 + "\n")
 
 
 def main():
-    parser = argparse.ArgumentParser(description="Forge Autonomous Hourly Regression Runner")
-    parser.add_argument("--domain", type=str, help="Specific domain to test (default: all)")
-    parser.add_argument("--headed", action="store_true", help="Launch browser visibly for debugging")
-    parser.add_argument("--no-heal", action="store_true", help="Disable self-healing on failure")
+    parser = argparse.ArgumentParser(
+        description="Forge Continuous Autonomous QA Cron Scheduler",
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+    )
+    parser.add_argument(
+        "--once",
+        action="store_true",
+        help="Execute a single cycle for all currently due tests and exit immediately.",
+    )
+    parser.add_argument(
+        "--daemon",
+        action="store_true",
+        help="Run continuously in background polling mode.",
+    )
+    parser.add_argument(
+        "--status",
+        action="store_true",
+        help="Inspect current test schedule status and upcoming run times without executing.",
+    )
+    parser.add_argument(
+        "--interval",
+        type=int,
+        default=60,
+        help="Poll interval in seconds when running in daemon mode (default: 60s).",
+    )
+    parser.add_argument(
+        "--domain",
+        type=str,
+        default=None,
+        help="Filter execution to tests belonging to a specific website domain.",
+    )
+    parser.add_argument(
+        "--headed",
+        action="store_true",
+        help="Run Playwright browser tests in headed mode (visible browser window).",
+    )
+    parser.add_argument(
+        "--limit",
+        type=int,
+        default=50,
+        help="Maximum number of due tests to process per cycle (default: 50).",
+    )
+
     args = parser.parse_args()
 
-    is_headed = args.headed or (not is_headless())
-    exit_code = run_hourly_regression(
+    # Ensure PostgreSQL migrations are initialized
+    init_db()
+
+    if args.status:
+        print_banner("STATUS", domain=args.domain)
+        print_schedule_table(domain=args.domain)
+        return
+
+    if args.daemon:
+        print_banner("DAEMON", domain=args.domain, interval=args.interval, headed=args.headed)
+        print_schedule_table(domain=args.domain)
+        try:
+            asyncio.run(
+                start_cron_scheduler_daemon(
+                    poll_interval_seconds=args.interval,
+                    domain=args.domain,
+                    headless=not args.headed,
+                )
+            )
+        except KeyboardInterrupt:
+            print("\n[CRON CLI] Scheduler stopped by user.")
+        return
+
+    # Default to single-cycle execution (--once or default invocation)
+    print_banner("SINGLE CYCLE (--once)", domain=args.domain, headed=args.headed)
+    print_schedule_table(domain=args.domain)
+
+    result = run_cron_cycle(
         domain=args.domain,
-        headed=is_headed,
-        auto_heal=not args.no_heal,
+        headless=not args.headed,
+        limit=args.limit,
     )
-    sys.exit(exit_code)
+
+    print("\n" + "=" * 80)
+    print("  CRON CYCLE RESULTS")
+    print("=" * 80)
+    print(f"  Status          : {result.get('status')}")
+    print(f"  Due Tests Found : {result.get('due_count', 0)}")
+    print(f"  Executed        : {result.get('executed_count', 0)}")
+    print(f"  Passed          : {result.get('passed_count', 0)}")
+    print(f"  Bugs Confirmed  : {result.get('bug_count', 0)}")
+    print(f"  Failed (Drift)  : {result.get('failed_count', 0)}")
+    print(f"  Duration        : {result.get('duration_seconds', 0.0)}s")
+    print("=" * 80 + "\n")
 
 
 if __name__ == "__main__":

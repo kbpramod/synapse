@@ -94,9 +94,9 @@ def create_forge_graph():
         "analyzer",
         route_analyzer,
         {
-            "healer": "healer",
+            "healer": "healer", 
             "advance_test": "advance_test",
-            "__end__": END,
+            "__end__": END
         }
     )
 

@@ -104,3 +104,7 @@ def run_test_script(
             "trace_path": None,
             "screenshot_paths": [],
         }
+
+
+# Backwards compatibility alias
+run_python_test_script = run_test_script

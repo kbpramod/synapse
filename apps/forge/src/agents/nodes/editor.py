@@ -1,3 +1,4 @@
+import ast
 import json
 import logging
 from pathlib import Path
@@ -5,8 +6,9 @@ from typing import Any, Dict, List, Optional
 from langchain_core.messages import SystemMessage, HumanMessage
 from agents.llm import get_chat_model
 from agents.state import ForgeState
+from agents.script_lint import apply_lint
 from db.repository import ForgeRepository
-from storage.local import sanitize_domain
+from storage.local import sanitize_domain, mirror_to_cloud, save_script_revision
 
 logger = logging.getLogger("forge.agent.editor")
 
@@ -18,11 +20,30 @@ You operate like a professional coding assistant:
 2. EDIT the code to fix the root cause identified in the diagnosis and fix plan.
 3. PRESERVE all existing functionality that already works (navigation, setup, assertions that were not flagged).
 4. DO NOT rewrite the script from scratch. Keep the existing function name, imports, and structure.
+   EXCEPTION — when the healing plan's `failure_class` is "wrong_expectation", the flagged
+   assertion is itself the bug: DELETE or REPLACE it as instructed. Do not try to satisfy it
+   with longer waits, `wait_for_selector`, or a looser regex — the element/route being asserted
+   does not exist in this application, so waiting for it can never succeed. Rule 3 does not
+   protect an assertion the plan identified as wrong.
 5. If locator updates are needed, use resilient Playwright locators:
    - In Python: page.get_by_role(...), page.get_by_text(...), page.get_by_label(...), page.get_by_placeholder(...)
    - In TypeScript: page.getByRole(...), page.getByText(...), page.getByLabel(...), page.getByPlaceholder(...)
 6. Ensure all required imports (e.g. `re`, `expect`, `sync_playwright`) remain intact.
-7. Return ONLY the complete, edited script code without markdown fences, or wrapped in a single ```python or ```typescript code fence.
+7. Avoid strict mode violations: if multiple elements share text/roles across responsive viewports, use specific ID selectors (e.g. `page.locator('#id')`) or `.first` (e.g. `page.get_by_role('link', name='...').first`).
+8. NEVER INTRODUCE A GUESSED DESTINATION URL. If the failure is "expected URL to be
+   /dashboard" (or any route the app never actually navigates to), the correct repair is to
+   REMOVE that assertion, not to tweak the pattern. Replace it with a signal that does not
+   depend on knowing the destination: the login form/password field is gone, a logout or
+   account control is visible, the URL simply differs from the starting URL, or the submit
+   response returned a non-error status. Only keep a concrete path if it appears in the
+   discovered elements/links.
+9. REAL CREDENTIALS: `available_accounts` in the context lists the real registered test
+   accounts for this site (username, password, role). If the script signs in, it MUST use
+   those exact values literally — never replace them with placeholders like
+   "user@example.com" or "your_password", and never remove working credentials while
+   repairing something else. Only if that list is empty may you read credentials from
+   environment variables.
+10. Return ONLY the complete, edited script code without markdown fences, or wrapped in a single ```python or ```typescript code fence.
 """
 
 
@@ -106,8 +127,12 @@ def editor_node(state: ForgeState) -> Dict[str, Any]:
     diagnosis = healing_plan.get("diagnosis", "Test step or assertion failed.")
     fix_plan = healing_plan.get("fix_plan", "Repair failing locator or wait condition.")
     preserve = healing_plan.get("preserve", "Keep all existing setup and working assertions.")
+    failure_class = healing_plan.get("failure_class", "automation_defect")
 
-    logger.info(f"[EDITOR] Surgically editing test script: {test_path.name} (heal_attempt={heal_attempt})")
+    logger.info(
+        f"[EDITOR] Surgically editing test script: {test_path.name} "
+        f"(heal_attempt={heal_attempt}, failure_class={failure_class})"
+    )
 
     # Discovered elements for locator reference
     elements_sample = {
@@ -120,14 +145,35 @@ def editor_node(state: ForgeState) -> Dict[str, Any]:
             for i in (disc.get("elements", {}).get("inputs", []))[:15]
         ],
         "links": [
-            {"text": l.get("text"), "href": l.get("href"), "forge_id": l.get("forge_id")}
-            for l in (disc.get("elements", {}).get("links", []))[:10]
+            {
+                "text": l.get("text"),
+                "href": l.get("href"),
+                "selector": l.get("selector"),
+                "id": l.get("id"),
+                "forge_id": l.get("forge_id"),
+                "visible_viewports": l.get("visible_viewports", ["desktop"])
+            }
+            for l in (disc.get("elements", {}).get("links", []))[:25]
         ]
     }
+
+    # Real registered test accounts for THIS website, so a repair never swaps working
+    # credentials for invented placeholders (a common cause of a "fixed" test failing
+    # again at login), and never pulls in another site's accounts.
+    try:
+        scoped_website_id = state.get("website_id") or current_test.get("website_id")
+        if scoped_website_id:
+            available_accounts = ForgeRepository.get_credentials_for_website(int(scoped_website_id))
+        else:
+            available_accounts = ForgeRepository.get_credentials_for_url(state.get("target_url") or "")
+    except Exception as acc_err:
+        logger.warning(f"[EDITOR] Could not load accounts for {state.get('target_url')}: {acc_err}")
+        available_accounts = []
 
     editor_payload = {
         "file_path": str(test_path),
         "target_url": state.get("target_url"),
+        "available_accounts": available_accounts,
         "test_scenario": current_test,
         "existing_code": existing_code,
         "last_execution_error": {
@@ -136,6 +182,7 @@ def editor_node(state: ForgeState) -> Dict[str, Any]:
             "stdout": (exec_res.get("stdout") or "")[-1000:],
         },
         "healing_plan": {
+            "failure_class": failure_class,
             "diagnosis": diagnosis,
             "fix_plan": fix_plan,
             "preserve": preserve,
@@ -151,7 +198,7 @@ def editor_node(state: ForgeState) -> Dict[str, Any]:
                 content=(
                     f"Please surgically edit and repair the following test script.\n\n"
                     f"File to edit: {test_path.name}\n"
-                    f"Context & Instructions:\n{json.dumps(editor_payload, indent=2)}"
+                    f"Context & Instructions:\n{json.dumps(editor_payload, indent=2, default=str)}"
                 )
             ),
         ]
@@ -165,14 +212,77 @@ def editor_node(state: ForgeState) -> Dict[str, Any]:
         else:
             edited_code = clean_code(response_text)
 
+        if test_path.suffix == ".py":
+            edited_code = apply_lint(edited_code, f"editor/{test_path.name}")
+
     except Exception as e:
-        logger.error(f"[EDITOR] LLM edit failed: {e}. Keeping original code.")
+        logger.error(f"[EDITOR] LLM edit failed: {e}. Keeping original code.", exc_info=True)
         edited_code = existing_code
+
+    # Validate with Python AST parsing before saving to prevent corrupting test scripts
+    if test_path.suffix == ".py":
+        try:
+            ast.parse(edited_code)
+            logger.info(f"[EDITOR] AST validation passed for {test_path.name}.")
+        except SyntaxError as syntax_err:
+            logger.error(
+                f"[EDITOR] AST validation failed: Edited code contains SyntaxError ({syntax_err}). "
+                f"Rejecting invalid modification and preserving existing working code."
+            )
+            edited_code = existing_code
+
+    # A heal that changes nothing will fail identically on the next run, burning the whole
+    # heal budget in silence. Make that loud rather than letting the loop spin.
+    edit_applied = edited_code.strip() != existing_code.strip()
+    if not edit_applied:
+        logger.warning(
+            f"[EDITOR] NO CHANGE APPLIED to {test_path.name} (heal_attempt={heal_attempt}). "
+            f"The script is byte-identical, so re-running it will fail exactly the same way. "
+            f"This usually means the edit call itself failed above — fix that rather than retrying."
+        )
+
+    # Archive the script's lineage for this run. Healing overwrites in place, so without this
+    # the previous version and the reason it changed are gone.
+    run_id = state.get("run_id") or f"run_{test_path.stem}"
+    history_test_id = str(current_test.get("test_id") or current_test.get("id") or test_path.stem)
+    history_url = state.get("target_url") or ""
+    try:
+        # attempt 0 == the code as it stood before any healing touched it.
+        if heal_attempt <= 1:
+            save_script_revision(
+                url_or_domain=history_url,
+                test_id=history_test_id,
+                run_id=run_id,
+                attempt=0,
+                code=existing_code,
+                metadata={"stage": "pre_heal_baseline"},
+            )
+
+        revision_path = save_script_revision(
+            url_or_domain=history_url,
+            test_id=history_test_id,
+            run_id=run_id,
+            attempt=heal_attempt,
+            code=edited_code,
+            metadata={
+                "stage": "post_heal",
+                "edit_applied": edit_applied,
+                "failure_class": failure_class,
+                "diagnosis": diagnosis,
+                "fix_plan": fix_plan,
+                "preserve": preserve,
+                "error_summary": exec_res.get("error_summary"),
+            },
+        )
+        logger.info(f"[EDITOR] Archived script revision (attempt {heal_attempt}): {revision_path.name}")
+    except Exception as hist_err:
+        logger.warning(f"[EDITOR] Could not archive script revision: {hist_err}")
 
     # Write edited code back to file
     test_path.parent.mkdir(parents=True, exist_ok=True)
     with open(test_path, "w", encoding="utf-8") as f:
         f.write(edited_code)
+    mirror_to_cloud(test_path, edited_code, content_type="text/x-python" if test_path.suffix == ".py" else "text/plain")
 
     logger.info(f"[EDITOR] Successfully saved edited test script to: {test_path}")
 
@@ -182,7 +292,7 @@ def editor_node(state: ForgeState) -> Dict[str, Any]:
         try:
             domain = sanitize_domain(target_url)
             ForgeRepository.save_test(
-                test_id=current_test.get("id", test_path.stem),
+                test_id=str(current_test.get("test_id") or current_test.get("id") or test_path.stem),
                 domain=domain,
                 page_url=target_url,
                 title=current_test.get("title", test_path.stem),
@@ -201,4 +311,5 @@ def editor_node(state: ForgeState) -> Dict[str, Any]:
     return {
         "test_code": edited_code,
         "test_file_path": str(test_path),
+        "edit_applied": edit_applied,
     }

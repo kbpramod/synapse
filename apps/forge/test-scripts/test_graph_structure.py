@@ -8,6 +8,7 @@ if str(src_dir) not in sys.path:
     sys.path.insert(0, str(src_dir))
 
 from agents.graph import create_forge_graph, route_analyzer
+from agents.onboarding_graph import create_onboarding_graph
 from agents.state import ForgeState, AnalysisResult, TestScenario
 
 
@@ -33,6 +34,22 @@ def test_graph_compilation():
     for expected in expected_nodes:
         assert expected in node_names, f"Node '{expected}' missing from graph nodes: {node_names}"
     print(f"[TEST PASS] All {len(expected_nodes)} nodes verified in graph: {sorted(list(expected_nodes))}")
+
+
+def test_onboarding_graph_compilation():
+    print("[TEST] Compiling Forge Onboarding StateGraph...")
+    onboarding_graph = create_onboarding_graph()
+    assert onboarding_graph is not None, "Onboarding graph failed to compile"
+
+    user_nodes = {k for k in onboarding_graph.nodes.keys() if not k.startswith("__")}
+    expected_nodes = {
+        "discover",
+        "understanding",
+        "planner",
+        "builder",
+    }
+    assert user_nodes == expected_nodes, f"Onboarding graph should have only {expected_nodes}, but got: {user_nodes}"
+    print(f"[TEST PASS] All {len(expected_nodes)} onboarding nodes verified: {sorted(list(expected_nodes))}")
 
 
 def test_routing_logic():
@@ -84,6 +101,7 @@ def main():
     print("RUNNING FORGE GRAPH UNIT VERIFICATION")
     print("=" * 60)
     test_graph_compilation()
+    test_onboarding_graph_compilation()
     test_routing_logic()
     print("=" * 60)
     print("ALL GRAPH VERIFICATION TESTS PASSED SUCCESSFULLY!")

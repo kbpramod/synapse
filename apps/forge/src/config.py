@@ -14,12 +14,24 @@ load_dotenv()
 DATABASE_URL = os.getenv("DATABASE_URL", "")
 
 # Storage
-STORAGE_ROOT = Path(os.getenv("FORGE_STORAGE_ROOT", str(PROJECT_ROOT / "storage"))).resolve()
+# Durable artifacts (discovery/planner JSON, test scripts, verification reports) live in
+# Supabase Storage now. FORGE_CACHE_ROOT is just a disposable local scratch space used to
+# materialize files where a real filesystem path is required (e.g. Playwright subprocess
+# execution) — safe to clear at any time, defaults to the OS temp directory.
+import tempfile
+
+STORAGE_ROOT = Path(os.getenv("FORGE_CACHE_ROOT", str(Path(tempfile.gettempdir()) / "forge-cache"))).resolve()
 STORAGE_ROOT.mkdir(parents=True, exist_ok=True)
 
-# Headless mode control (default: True, override via FORGE_HEADLESS=false or HEADLESS=false)
-_raw_headless = os.getenv("FORGE_HEADLESS", os.getenv("HEADLESS", "true")).strip().lower()
-DEFAULT_HEADLESS = _raw_headless not in ("false", "0", "no", "headed")
+SUPABASE_URL = os.getenv("SUPABASE_URL", "")
+SUPABASE_SECRET_KEY = os.getenv("SUPABASE_SECRET_KEY", "")
+SUPABASE_STORAGE_BUCKET = os.getenv("SUPABASE_STORAGE_BUCKET", "tzylo")
+SUPABASE_STORAGE_PREFIX = os.getenv("SUPABASE_STORAGE_PREFIX", "forge").strip("/")
+
+# Headless mode control — defaults to HEADED so browser runs are visible for analysis.
+# Override with FORGE_HEADLESS=true or HEADLESS=true to go back to headless.
+_raw_headless = os.getenv("FORGE_HEADLESS", os.getenv("HEADLESS", "false")).strip().lower()
+DEFAULT_HEADLESS = _raw_headless in ("true", "1", "yes", "headless")
 
 # LLM / AI Credits
 AICREDITS_API_KEY = os.getenv("AICREDITS_API_KEY", "")
@@ -35,11 +47,10 @@ DEFAULT_TEST_LANGUAGE = os.getenv("FORGE_TEST_LANGUAGE", "python").strip().lower
 
 
 def is_headless(override: Optional[bool] = None) -> bool:
-    """Returns whether browser actions should run headless."""
+    """Returns whether browser actions should run headless. Defaults to headed (False)."""
     if override is not None:
         return override
-    raw = os.getenv("FORGE_HEADLESS", os.getenv("HEADLESS", "true")).strip().lower()
-    return raw not in ("false", "0", "no", "headed")
+    return DEFAULT_HEADLESS
 
 
 def get_storage_root() -> Path:

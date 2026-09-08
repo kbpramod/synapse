@@ -48,10 +48,16 @@ def main():
         default=os.getenv("FORGE_TEST_LANGUAGE", "python"),
         help="Test script language: python (default)"
     )
+    parser.add_argument(
+        "--viewport",
+        choices=["desktop", "tablet", "mobile"],
+        default="desktop",
+        help="Target viewport profile: desktop (1280x800, default), tablet (768x1024), or mobile (375x667)"
+    )
     args = parser.parse_args()
 
     target_url = args.url
-    print_banner(f"FORGE AUTONOMOUS TESTING AGENT: {target_url}")
+    print_banner(f"FORGE AUTONOMOUS TESTING AGENT: {target_url} [viewport: {args.viewport}]")
 
     if args.headed:
         headless_mode = False
@@ -68,6 +74,7 @@ def main():
     config = {
         "headless": headless_mode,
         "language": args.lang,
+        "viewport": args.viewport,
         "timeout_ms": 25000,
         "settle_ms": 1000,
         "test_timeout_s": args.timeout,

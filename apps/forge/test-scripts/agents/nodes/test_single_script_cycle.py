@@ -1,3 +1,13 @@
+import sys
+from pathlib import Path
+
+# Add src to sys.path
+root_dir = Path(__file__).resolve().parent.parent.parent.parent
+src_dir = root_dir / "src"
+
+if str(src_dir) not in sys.path:
+    sys.path.insert(0, str(src_dir))
+
 from agents.nodes.runner import runner_node
 from agents.nodes.observer import observer_node
 from agents.nodes.analyzer import analyzer_node
@@ -6,12 +16,33 @@ from agents.nodes.editor import editor_node
 
 
 def main():
+    # ---------------------------------------------------------------
+    # TEST CONFIGURATION
+    # ---------------------------------------------------------------
+
+    test_file_path = (
+        Path(sys.argv[1])
+        if len(sys.argv) > 1
+        else Path(
+            r"D:\Pramod\Tzylo\forge\wecatchai.com\tests\test_page_smoke.py"
+        )
+    )
+
+    if not test_file_path.exists():
+        raise FileNotFoundError(
+            f"Test file does not exist: {test_file_path}"
+        )
+
+    target_url = "https://wecatchai.com"
+
     state = {
-        "test_file_path": r"D:\Pramod\Tzylo\forge\wecatchai.com\tests\test_page_smoke.py",
+        "test_file_path": str(test_file_path),
+
+        "target_url": target_url,
 
         "current_test": {
             "id": "test_page_smoke",
-            "title": "Example Domain Page Smoke Test",
+            "title": "WeCatchAI Smoke Test",
         },
 
         "config": {
@@ -24,16 +55,17 @@ def main():
         "healing_history": [],
         "suite_summary": [],
 
-        "target_url": "https://example.com",
+        # Editor needs the existing source code.
+        "test_code": test_file_path.read_text(encoding="utf-8"),
     }
 
     print("=" * 80)
     print("FORGE SINGLE TEST HEALING CYCLE")
     print("=" * 80)
 
-    # ------------------------------------------------------------------
+    # ---------------------------------------------------------------
     # 1. RUNNER
-    # ------------------------------------------------------------------
+    # ---------------------------------------------------------------
 
     print("\n" + "=" * 80)
     print("1. RUNNER")
@@ -45,9 +77,9 @@ def main():
     print("\nRunner result:")
     print(state["execution_result"])
 
-    # ------------------------------------------------------------------
+    # ---------------------------------------------------------------
     # 2. OBSERVER
-    # ------------------------------------------------------------------
+    # ---------------------------------------------------------------
 
     print("\n" + "=" * 80)
     print("2. OBSERVER")
@@ -59,9 +91,9 @@ def main():
     print("\nObserver result:")
     print(state["execution_result"])
 
-    # ------------------------------------------------------------------
+    # ---------------------------------------------------------------
     # 3. ANALYZER
-    # ------------------------------------------------------------------
+    # ---------------------------------------------------------------
 
     print("\n" + "=" * 80)
     print("3. ANALYZER")
@@ -73,9 +105,9 @@ def main():
     print("\nAnalyzer result:")
     print(state["analysis"])
 
-    # ------------------------------------------------------------------
+    # ---------------------------------------------------------------
     # 4. HEALER
-    # ------------------------------------------------------------------
+    # ---------------------------------------------------------------
 
     if state["analysis"].get("verdict") == "NEED_HEAL":
 
@@ -92,9 +124,9 @@ def main():
         print("\nHealing plan:")
         print(state.get("healing_plan"))
 
-        # ------------------------------------------------------------------
+        # -----------------------------------------------------------
         # 5. EDITOR
-        # ------------------------------------------------------------------
+        # -----------------------------------------------------------
 
         print("\n" + "=" * 80)
         print("5. EDITOR")
@@ -106,9 +138,12 @@ def main():
         print("\nEditor result:")
         print(f"Test file: {state.get('test_file_path')}")
 
-        # ------------------------------------------------------------------
-        # 6. RUNNER AGAIN
-        # ------------------------------------------------------------------
+        # Keep state in sync with the edited file.
+        state["test_code"] = state.get("test_code", "")
+
+        # -----------------------------------------------------------
+        # 6. RUNNER AFTER HEAL
+        # -----------------------------------------------------------
 
         print("\n" + "=" * 80)
         print("6. RUNNER - AFTER HEAL")
@@ -120,9 +155,9 @@ def main():
         print("\nRunner result:")
         print(state["execution_result"])
 
-        # ------------------------------------------------------------------
-        # 7. OBSERVER AGAIN
-        # ------------------------------------------------------------------
+        # -----------------------------------------------------------
+        # 7. OBSERVER AFTER HEAL
+        # -----------------------------------------------------------
 
         print("\n" + "=" * 80)
         print("7. OBSERVER - AFTER HEAL")
@@ -134,9 +169,9 @@ def main():
         print("\nObserver result:")
         print(state["execution_result"])
 
-        # ------------------------------------------------------------------
-        # 8. ANALYZER AGAIN
-        # ------------------------------------------------------------------
+        # -----------------------------------------------------------
+        # 8. ANALYZER AFTER HEAL
+        # -----------------------------------------------------------
 
         print("\n" + "=" * 80)
         print("8. ANALYZER - AFTER HEAL")
@@ -148,9 +183,9 @@ def main():
         print("\nAnalyzer result:")
         print(state["analysis"])
 
-    # ------------------------------------------------------------------
-    # REPORT
-    # ------------------------------------------------------------------
+    # ---------------------------------------------------------------
+    # FINAL REPORT
+    # ---------------------------------------------------------------
 
     print("\n" + "=" * 80)
     print("FINAL REPORT")
@@ -160,6 +195,8 @@ def main():
     execution = state.get("execution_result", {})
 
     print(f"Test       : {state['current_test']['title']}")
+    print(f"Target     : {state['target_url']}")
+    print(f"Test file  : {state['test_file_path']}")
     print(f"Passed     : {execution.get('passed')}")
     print(f"Exit code  : {execution.get('exit_code')}")
     print(f"Duration   : {execution.get('duration_s')}s")

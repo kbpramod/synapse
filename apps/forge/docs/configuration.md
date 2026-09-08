@@ -59,3 +59,38 @@ uv run scripts/run_stage.py --stage run --url https://example.com/ --headed
 ```bash
 uv run scripts/run_cron.py --headed
 ```
+
+---
+
+## Database Schema & Migrations (`forge` Schema)
+
+Forge isolates all its persistence models and migration tracking inside a dedicated PostgreSQL schema (`forge`) rather than the default `public` or `dbo` schemas.
+
+### Schema Architecture
+- **Isolated Tables**:
+  - `forge.websites`: Discovered websites and domain metadata
+  - `forge.accounts`: Authentication credentials and role-based test users
+  - `forge.pages`: Crawled page maps, URLs, preconditions, and primary actions
+  - `forge.elements`: Identified interactive DOM elements and selectors
+  - `forge.tests`: Planned and generated test scripts, priorities, and cron schedules
+  - `forge.test_runs`: Execution logs, exit codes, screenshots, and trace paths
+  - `forge.heals`: Self-healing audit trails, error diagnosis, and code patches
+  - `forge.alembic_version`: Alembic migration revision pointer (does not collide with `public.alembic_version`)
+
+### Connection Search Path
+Connections yielded by `db.connection.get_connection()` automatically configure:
+```sql
+CREATE SCHEMA IF NOT EXISTS forge;
+SET search_path TO forge, public;
+```
+All SQLAlchemy declarative models in `src/models/base.py` define `metadata = MetaData(schema="forge")`.
+
+### Running Migrations
+To apply pending database migrations to the `forge` schema:
+```bash
+uv run python scripts/run_migrations.py
+```
+Or check table status and columns across schemas:
+```bash
+uv run python scripts/check_tables.py
+```
