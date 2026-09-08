@@ -43,7 +43,12 @@ You operate like a professional coding assistant:
    "user@example.com" or "your_password", and never remove working credentials while
    repairing something else. Only if that list is empty may you read credentials from
    environment variables.
-10. Return ONLY the complete, edited script code without markdown fences, or wrapped in a single ```python or ```typescript code fence.
+10. AUTHENTICATION REDIRECT REPAIR:
+    If the healing plan diagnoses an authentication redirect (the test navigated to a protected page without an active session):
+    - If `storage_state_available` is provided: Update the context creation to reuse the session:
+      `context = browser.new_context(viewport={"width": ...}, storage_state="<path>")`
+    - If `storage_state_available` is not available: Insert a sign-in interaction sequence at the start of the test using `available_accounts` (e.g. goto login URL, fill username & password, submit, wait for load) before navigating to the target page.
+11. Return ONLY the complete, edited script code without markdown fences, or wrapped in a single ```python or ```typescript code fence.
 """
 
 
@@ -119,6 +124,33 @@ def editor_node(state: ForgeState) -> Dict[str, Any]:
     healing_history = state.get("healing_history", [])
     exec_res = state.get("execution_result") or {}
     disc = state.get("discovery_data") or {}
+    target_url = state.get("target_url") or current_test.get("page_url") or current_test.get("target_url") or ""
+
+    if not disc or not disc.get("elements"):
+        try:
+            from storage.local import get_discovery_storage_dir, get_page_folder
+            if target_url:
+                disc_file = get_discovery_storage_dir(target_url) / "discovery.json"
+                if disc_file.exists():
+                    with open(disc_file, "r", encoding="utf-8") as f:
+                        disc = json.load(f)
+                else:
+                    page_file = get_page_folder(target_url) / "index.json"
+                    if page_file.exists():
+                        with open(page_file, "r", encoding="utf-8") as f:
+                            disc = json.load(f)
+        except Exception:
+            pass
+
+    if not disc or not disc.get("elements"):
+        try:
+            from db.repository import ForgeRepository
+            if target_url:
+                page_rec = ForgeRepository.get_page_by_url(target_url)
+                if page_rec and page_rec.get("metadata_json"):
+                    disc = page_rec["metadata_json"]
+        except Exception:
+            pass
 
     # If healing_plan is not explicitly set, retrieve from latest healing_history
     if not healing_plan and healing_history:
@@ -170,14 +202,32 @@ def editor_node(state: ForgeState) -> Dict[str, Any]:
         logger.warning(f"[EDITOR] Could not load accounts for {state.get('target_url')}: {acc_err}")
         available_accounts = []
 
+    # Search for an existing storage state session file
+    target_url = state.get("target_url") or ""
+    storage_state_available = None
+    try:
+        from storage.local import get_website_storage_dir
+        if target_url:
+            site_storage = get_website_storage_dir(target_url)
+            tests_dir = site_storage / "tests"
+            if tests_dir.exists():
+                session_files = list(tests_dir.glob("**/*.storage_state.json"))
+                if session_files:
+                    storage_state_available = str(session_files[0].resolve()).replace("\\", "/")
+    except Exception:
+        pass
+
     editor_payload = {
         "file_path": str(test_path),
         "target_url": state.get("target_url"),
         "available_accounts": available_accounts,
+        "storage_state_available": storage_state_available,
         "test_scenario": current_test,
         "existing_code": existing_code,
         "last_execution_error": {
             "error_summary": exec_res.get("error_summary"),
+            "failure_url": exec_res.get("failure_url"),
+            "visible_errors": exec_res.get("visible_errors", []),
             "stderr": (exec_res.get("stderr") or "")[-2000:],
             "stdout": (exec_res.get("stdout") or "")[-1000:],
         },

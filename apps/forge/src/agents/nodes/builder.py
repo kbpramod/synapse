@@ -36,6 +36,8 @@ Requirements for the generated Playwright Python test:
        )
        with sync_playwright() as p:
            browser = p.chromium.launch(headless=headless)
+           # If storage_state_path is provided in context, reuse the authenticated session:
+           # context = browser.new_context(viewport={"width": <target_width>, "height": <target_height>}, storage_state="<storage_state_path>")
            context = browser.new_context(viewport={"width": <target_width>, "height": <target_height>})
            page = context.new_page()
            try:
@@ -44,6 +46,18 @@ Requirements for the generated Playwright Python test:
                print(f"[FINAL_URL] {page.url}")
                context.storage_state(path=os.path.splitext(os.path.abspath(__file__))[0] + ".storage_state.json")
                print("[TEST PASSED] {scenario_title}")
+           except Exception as exc:
+               try:
+                   print(f"[FAILURE_URL] {page.url}")
+                   error_texts = page.locator(".error, .alert, [role='alert'], [data-test='error'], h1, h2, h3").all_inner_texts()
+                   clean_errors = [t.strip() for t in error_texts if t.strip()]
+                   if clean_errors:
+                       import json
+                       print(f"[VISIBLE_ERRORS] {json.dumps(clean_errors[:5])}")
+                   page.screenshot(path=os.path.splitext(os.path.abspath(__file__))[0] + "_failure.png")
+               except Exception:
+                   pass
+               raise exc
            finally:
                context.close()
                browser.close()
@@ -128,6 +142,11 @@ Requirements for the generated Playwright Python test:
      journeys); otherwise use the first account listed.
    - If `available_accounts` is empty, only then fall back to reading credentials from
      environment variables (e.g. os.getenv("TEST_USERNAME")).
+
+8. AUTHENTICATED ROUTES & SESSION REUSE:
+   - If `storage_state_path` is provided and the target page is behind authentication (e.g. /inventory.html, /dashboard, /settings):
+     Pass `storage_state="<storage_state_path>"` into `browser.new_context(viewport=..., storage_state=...)`.
+   - If NO `storage_state_path` is provided and the target URL requires authentication, the test MUST first perform the login steps using `available_accounts` before navigating to the target page.
 """
 
 BUILDER_TS_SYSTEM_PROMPT = """You are an elite Playwright TypeScript Automation Engineer.
@@ -279,9 +298,23 @@ def builder_node(state: ForgeState) -> Dict[str, Any]:
         logger.warning(f"[TEST BUILDER] Could not load accounts for {target_url}: {acc_err}")
         available_accounts = []
 
+    # Search for an existing storage state session file for this website or domain
+    storage_state_path = None
+    try:
+        site_storage = get_website_storage_dir(target_url)
+        tests_dir = site_storage / "tests"
+        if tests_dir.exists():
+            session_files = list(tests_dir.glob("**/*.storage_state.json"))
+            if session_files:
+                storage_state_path = str(session_files[0].resolve()).replace("\\", "/")
+                logger.info(f"[TEST BUILDER] Found existing session file: {storage_state_path}")
+    except Exception as s_err:
+        logger.debug(f"[TEST BUILDER] Could not check for session file: {s_err}")
+
     builder_payload: Dict[str, Any] = {
         "target_url": target_url,
         "available_accounts": available_accounts,
+        "storage_state_path": storage_state_path,
         # Grounded assertion catalogue from the expectation node — what can actually be
         # asserted on this page, and what is explicitly unknowable.
         "assertable_signals": state.get("assertable_signals") or {},
@@ -347,9 +380,11 @@ def builder_node(state: ForgeState) -> Dict[str, Any]:
 """
         test_id_clean = (current_test.get("id") or "journey_test").replace("-", "_")
         if is_python:
+            storage_kwarg = f', storage_state="{storage_state_path}"' if storage_state_path else ""
             code = f"""import os
 import re
 import sys
+import json
 from playwright.sync_api import sync_playwright, expect
 
 
@@ -357,7 +392,7 @@ def test_{test_id_clean}():
     headless = os.getenv("HEADLESS", "false").lower() in ("true", "1", "yes")
     with sync_playwright() as p:
         browser = p.chromium.launch(headless=headless)
-        context = browser.new_context(viewport={{"width": {vp_dims['width']}, "height": {vp_dims['height']}}})
+        context = browser.new_context(viewport={{"width": {vp_dims['width']}, "height": {vp_dims['height']}}}{storage_kwarg})
         page = context.new_page()
         try:
             page.goto('{target_url}', wait_until='domcontentloaded', timeout=30000)
@@ -365,6 +400,17 @@ def test_{test_id_clean}():
             print(f"[FINAL_URL] {{page.url}}")
             context.storage_state(path=os.path.splitext(os.path.abspath(__file__))[0] + ".storage_state.json")
             print('[TEST PASSED] [{test_type}] Successfully completed journey on {target_url}')
+        except Exception as exc:
+            try:
+                print(f"[FAILURE_URL] {{page.url}}")
+                error_texts = page.locator(".error, .alert, [role='alert'], [data-test='error'], h1, h2, h3").all_inner_texts()
+                clean_errors = [t.strip() for t in error_texts if t.strip()]
+                if clean_errors:
+                    print(f"[VISIBLE_ERRORS] {{json.dumps(clean_errors[:5])}}")
+                page.screenshot(path=os.path.splitext(os.path.abspath(__file__))[0] + "_failure.png")
+            except Exception:
+                pass
+            raise exc
         finally:
             context.close()
             browser.close()

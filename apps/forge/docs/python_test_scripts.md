@@ -13,39 +13,59 @@ Forge generates native Python test scripts (`.py`) by default using the Playwrig
 
 ## Script Architecture
 
-Each generated Python test script follows this resilient structure:
+Each generated Python test script follows this resilient structure with built-in failure telemetry and session persistence:
 
 ```python
+import json
 import os
 import re
 import sys
 from playwright.sync_api import sync_playwright, expect
 
 
-def test_smoke_page_load():
-    # Reads HEADLESS env var (configured dynamically by Forge)
+def test_journey():
     headless = os.getenv("HEADLESS", "true").lower() in ("true", "1", "yes")
     
     with sync_playwright() as p:
         browser = p.chromium.launch(headless=headless)
-        context = browser.new_context(viewport={"width": 1280, "height": 800})
+        
+        # Session state reuse: If the page requires authentication and a saved session exists
+        storage_path = os.path.splitext(os.path.abspath(__file__))[0] + ".storage_state.json"
+        storage_arg = {"storage_state": storage_path} if os.path.exists(storage_path) else {}
+        context = browser.new_context(viewport={"width": 1280, "height": 800}, **storage_arg)
         page = context.new_page()
+        
         try:
-            # Safe navigation
-            page.goto("https://wecatchai.com/", wait_until="domcontentloaded", timeout=30000)
+            # Navigation
+            page.goto("https://example.com/dashboard", wait_until="domcontentloaded", timeout=30000)
             
-            # Assertions using Playwright's expect API
-            expect(page).to_have_title(re.compile(r".*WeCatchAI.*", re.IGNORECASE))
-            expect(page.get_by_role("button", name="Products")).to_be_visible()
+            # User interactions & assertions
+            expect(page.get_by_role("heading", name="Dashboard")).to_be_visible()
             
-            print("[TEST PASSED] Smoke Page Load & CTAs")
+            # Successful completion telemetry & session capture
+            print(f"[FINAL_URL] {page.url}")
+            context.storage_state(path=storage_path)
+            print("[TEST PASSED] Successfully completed user journey")
+            
+        except Exception as exc:
+            # Failure Telemetry: Captures actual landing URL, visible error banners, and full-page screenshot
+            try:
+                print(f"[FAILURE_URL] {page.url}")
+                error_texts = page.locator(".error, .alert, [role='alert'], [data-test='error'], h1, h2, h3").all_inner_texts()
+                clean_errors = [t.strip() for t in error_texts if t and t.strip()]
+                if clean_errors:
+                    print(f"[VISIBLE_ERRORS] {json.dumps(clean_errors[:5])}")
+                page.screenshot(path=storage_path.replace(".storage_state.json", "_failure.png"), full_page=True)
+            except Exception:
+                pass
+            raise exc
         finally:
             context.close()
             browser.close()
 
 
 if __name__ == "__main__":
-    test_smoke_page_load()
+    test_journey()
 ```
 
 ---

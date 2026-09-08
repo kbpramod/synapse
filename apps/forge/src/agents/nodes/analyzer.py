@@ -83,6 +83,7 @@ A Playwright automated user journey test has executed. Your job is to answer:
 1. "PASS": The user capability succeeded and all functional state transitions were confirmed.
 2. "NEED_HEAL": A Test Automation Defect. The application may be functioning, but the automated test script failed.
    Evidence examples:
+   - Authentication / Session redirect: The test attempted to navigate directly to a protected page (e.g., /inventory, /dashboard) without logging in or loading a saved storage_state, causing the application to redirect to a login screen or show a login-required error (e.g. 'Epic sadface: You can only access... when you are logged in'). This is an automation setup defect, NOT an application bug.
    - Locator resolved to a hidden responsive variant (e.g., 'locator resolved to hidden <span>Contact Us</span>' - the element exists, but the test selected the hidden responsive variant or failed to open the menu drawer first).
    - Locator not found or wrong selector.
    - Test code error (missing import, NameError, wrong Playwright API usage).
@@ -93,12 +94,12 @@ A Playwright automated user journey test has executed. Your job is to answer:
    - Uncaught application JavaScript exception originating from the application code.
    - Application crash or broken business logic (e.g., valid form submission triggered an unexpected error page).
 
-Analyze the test scenario goal, error summary, stderr, stdout, and test code.
+Analyze the test scenario goal, target URL, failure URL, visible error banners, error summary, stderr, stdout, and test code.
 Return strictly a JSON object:
 {
   "verdict": "PASS" | "NEED_HEAL" | "SUSPECTED_APP_FAILURE",
   "reason": "Detailed explanation of whether the user journey succeeded or why it failed based on evidence",
-  "failure_type": "hidden_responsive_variant" | "selector_mismatch" | "test_code_error" | "timeout" | "assertion_failure" | "server_error" | "uncaught_app_exception",
+  "failure_type": "authentication_redirect" | "hidden_responsive_variant" | "selector_mismatch" | "test_code_error" | "timeout" | "assertion_failure" | "server_error" | "uncaught_app_exception",
   "suggested_fix": "Concrete guidance for the healer on how to repair the automation, or suspected bug details"
 }
 Output ONLY valid JSON.
@@ -192,9 +193,20 @@ def analyzer_node(state: ForgeState) -> Dict[str, Any]:
     stdout = exec_res.get("stdout", "")
     test_code = state.get("test_code", "")
 
+    target_url = current_test.get("page_url") or state.get("target_url") or ""
+    failure_url = exec_res.get("failure_url") or ""
+    visible_errors = exec_res.get("visible_errors") or []
+    redirect_detected = bool(
+        failure_url and target_url and _normalize_url(failure_url) != _normalize_url(target_url)
+    )
+
     analyzer_payload = {
         "test_id": current_test.get("id"),
         "test_title": current_test.get("title"),
+        "target_url": target_url,
+        "failure_url": failure_url,
+        "redirect_detected": redirect_detected,
+        "visible_errors": visible_errors,
         "error_summary": exec_res.get("error_summary"),
         "stderr": stderr[-2000:],
         "stdout": stdout[-1000:],
@@ -228,20 +240,50 @@ def analyzer_node(state: ForgeState) -> Dict[str, Any]:
         else:
             verdict = "NEED_HEAL"
 
+        failure_type = analysis_dict.get("failure_type", "unknown")
+        reason = analysis_dict.get("reason", "Detected defect requiring resolution.")
+        suggested_fix = analysis_dict.get("suggested_fix")
+
+        # Safety override: If the application redirected an unauthenticated test or showed login errors,
+        # it is an automation setup defect (NEED_HEAL), NOT an application bug.
+        is_auth_redirect = redirect_detected or any(
+            re.search(r"\b(log\s*in|sign\s*in|authenticated|unauthorized|session expired)\b", err, re.I)
+            for err in visible_errors
+        )
+        if is_auth_redirect and verdict == "SUSPECTED_APP_FAILURE":
+            verdict = "NEED_HEAL"
+            failure_type = "authentication_redirect"
+            suggested_fix = (
+                f"Test redirected from protected route '{target_url}' to '{failure_url}'. "
+                "Initialize context with saved storage_state or prepend login authentication steps."
+            )
+
         analysis = {
             "verdict": verdict,
-            "reason": analysis_dict.get("reason", "Detected defect requiring resolution."),
-            "failure_type": analysis_dict.get("failure_type", "unknown"),
-            "suggested_fix": analysis_dict.get("suggested_fix"),
+            "reason": reason,
+            "failure_type": failure_type,
+            "suggested_fix": suggested_fix,
         }
     except Exception as e:
         logger.warning(f"[ANALYZER] LLM defect analysis failed ({e}). Defaulting to NEED_HEAL heuristic.")
-        analysis = {
-            "verdict": "NEED_HEAL",
-            "reason": f"Execution error: {exec_res.get('error_summary') or 'Timeout/locator failure'}",
-            "failure_type": "selector_or_timing",
-            "suggested_fix": "Refine locators and adjust wait times.",
-        }
+        is_auth_redirect = redirect_detected or any(
+            re.search(r"\b(log\s*in|sign\s*in|authenticated|unauthorized|session expired)\b", err, re.I)
+            for err in visible_errors
+        )
+        if is_auth_redirect:
+            analysis = {
+                "verdict": "NEED_HEAL",
+                "reason": f"Protected route redirected to '{failure_url}'. Authentication required.",
+                "failure_type": "authentication_redirect",
+                "suggested_fix": "Initialize context with saved storage_state or prepend login authentication steps.",
+            }
+        else:
+            analysis = {
+                "verdict": "NEED_HEAL",
+                "reason": f"Execution error: {exec_res.get('error_summary') or 'Timeout/locator failure'}",
+                "failure_type": "selector_or_timing",
+                "suggested_fix": "Refine locators and adjust wait times.",
+            }
 
     # Prefer the test_id slug over the numeric primary key, which is meaningless in logs.
     log_test_id = current_test.get("test_id") or current_test.get("id")

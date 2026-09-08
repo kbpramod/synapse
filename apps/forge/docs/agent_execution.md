@@ -50,3 +50,40 @@ uv run test-scripts/agent_loop.py https://wecatchai.com/ --lang typescript
 # Run headless with custom timeout
 uv run test-scripts/agent_loop.py https://wecatchai.com/ --headless true --timeout 60
 ```
+
+---
+
+## Telemetry, Defect Classification & Self-Healing
+
+### 1. Failure Telemetry & Diagnostics
+Generated test scripts are equipped with inline exception handlers that capture real-time application context at the exact moment of failure:
+- **`[FAILURE_URL]`**: The actual URL the browser is on when an exception or assertion occurs. Crucial for detecting silent HTTP redirects (e.g. redirecting from `/inventory.html` or `/dashboard` to `/` or `/login`).
+- **`[VISIBLE_ERRORS]`**: Error banners, toasts, and alert headings (`.error`, `.alert`, `[role='alert']`, `[data-test='error']`, `h1-h3`) visible on the failure page (e.g. *"Epic sadface: You can only access '/inventory.html' when you are logged in"*).
+- **Failure Screenshot**: Captured to `<test_name>_failure.png` before context termination.
+- **`[FINAL_URL]`**: Emitted upon journey success to automatically trigger background onboarding for newly reached authenticated pages.
+
+### 2. Defect Analysis (`analyzer`)
+The Defect Analyzer classifies execution outcomes into three distinct categories:
+- **`PASS`**: All functional state transitions and assertions succeeded.
+- **`NEED_HEAL` (Test Automation Defect)**: The application is behaving normally, but the automation failed:
+  - **Authentication Redirect**: The test navigated directly to a protected route without logging in or without loading session credentials.
+  - **Locator / Responsive Variant**: The element is hidden inside a collapsed drawer, mobile menu, or changed selector.
+  - **Timing & Waiting**: Dynamic DOM render timing or race conditions.
+- **`SUSPECTED_APP_FAILURE` (Application Bug)**: True application defects (HTTP 500/502/503 errors, unhandled JavaScript exceptions, or broken application business logic).
+
+### 3. Self-Healing & Session State Reuse (`healer` -> `editor`)
+When a test fails due to an authentication redirect or missing credentials:
+1. **Healer Diagnosis**: Combines `failure_url`, `redirect_detected`, `visible_errors_on_page`, and registered `available_accounts`.
+2. **Session Identification**: Automatically detects existing `*.storage_state.json` session files in `storage/<domain>/tests/`.
+3. **Tactical Fix Plan**: Formulates precise instructions for the `editor` node to either:
+   - Load the existing `storage_state` in `browser.new_context(storage_state=...)`.
+   - Prepend login steps utilizing registered user credentials before navigating to protected routes.
+4. **Editor Execution**: The Editor patches the script in place, preserving existing journey steps while resolving the prerequisite defect.
+
+### 4. Transparent Healer & Discovery Diagnostics
+To eliminate "black box" behavior when tests fail or elements seem missing, the Healer emits structured, traceable logs:
+- **`[HEAL:DISCOVERY]`**: Discloses the discovery snapshot source (`state`, disk cache `discovery.json`, or PostgreSQL), snapshot URL vs target URL, and raw element counts. Highlights any URL mismatch (e.g. if discovery was redirected to login).
+- **`[HEAL:LOCATOR_MATCH]`**: Explicitly cross-checks the failed locator or text from `error_summary` / `stderr` against raw discovery buttons, inputs, and links to report whether the element was ever observed on that page.
+- **`[HEAL:ELEMENTS_FEED]` & `[HEAL:ELEMENTS_FEED:OMITTED]`**: Details the exact number of buttons, inputs, links, and selects passed into the LLM prompt, prioritizes the targeted selector, and logs what elements were omitted to protect prompt context limits.
+- **`[HEAL:TELEMETRY]`**: Summarizes target URL, failure landing URL, redirect flags, on-screen error banners, available `storage_state`, and registered accounts.
+- **`[HEAL:LLM_RESULT]`**: Displays the final Failure Class, Root-Cause Diagnosis, Fix Plan, and Preserved test assertions.

@@ -2,9 +2,37 @@ import os
 import sys
 import time
 import subprocess
+import re
+import json
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 from config import is_headless, DEFAULT_TEST_TIMEOUT_S
+
+_FINAL_URL_RE = re.compile(r"\[FINAL_URL\]\s*(\S+)")
+_FAILURE_URL_RE = re.compile(r"\[FAILURE_URL\]\s*(\S+)")
+_VISIBLE_ERRORS_RE = re.compile(r"\[VISIBLE_ERRORS\]\s*(\[.*?\])")
+
+
+def _parse_telemetry(stdout: str, stderr: str) -> Dict[str, Any]:
+    combined = f"{stdout or ''}\n{stderr or ''}"
+    final_url_match = _FINAL_URL_RE.search(combined)
+    failure_url_match = _FAILURE_URL_RE.search(combined)
+    visible_errors_match = _VISIBLE_ERRORS_RE.search(combined)
+
+    visible_errors: List[str] = []
+    if visible_errors_match:
+        try:
+            parsed = json.loads(visible_errors_match.group(1))
+            if isinstance(parsed, list):
+                visible_errors = [str(x).strip() for x in parsed if x]
+        except Exception:
+            pass
+
+    return {
+        "final_url": final_url_match.group(1).strip() if final_url_match else None,
+        "failure_url": failure_url_match.group(1).strip() if failure_url_match else None,
+        "visible_errors": visible_errors,
+    }
 
 
 def run_test_script(
@@ -26,6 +54,9 @@ def run_test_script(
             "error_summary": "Test file not found",
             "trace_path": None,
             "screenshot_paths": [],
+            "final_url": None,
+            "failure_url": None,
+            "visible_errors": [],
         }
 
     working_dir = cwd or str(test_path.parent)
@@ -70,6 +101,7 @@ def run_test_script(
         screenshots: List[str] = [str(img) for img in Path(working_dir).glob("**/*.png")]
         traces = list(Path(working_dir).glob("**/*.zip"))
         trace_path = str(traces[0]) if traces else None
+        telemetry = _parse_telemetry(stdout, stderr)
 
         return {
             "exit_code": exit_code,
@@ -80,18 +112,27 @@ def run_test_script(
             "error_summary": error_summary,
             "trace_path": trace_path,
             "screenshot_paths": screenshots,
+            "final_url": telemetry["final_url"],
+            "failure_url": telemetry["failure_url"],
+            "visible_errors": telemetry["visible_errors"],
         }
     except subprocess.TimeoutExpired as e:
         duration = time.time() - start_time
+        out = e.stdout or ""
+        err = e.stderr or ""
+        telemetry = _parse_telemetry(out, err)
         return {
             "exit_code": 124,
             "passed": False,
-            "stdout": e.stdout or "",
-            "stderr": f"Test timed out after {timeout_s} seconds.",
+            "stdout": out,
+            "stderr": f"Test timed out after {timeout_s} seconds.\n{err}",
             "duration_s": round(duration, 2),
             "error_summary": f"Execution timed out ({timeout_s}s)",
             "trace_path": None,
             "screenshot_paths": [],
+            "final_url": telemetry["final_url"],
+            "failure_url": telemetry["failure_url"],
+            "visible_errors": telemetry["visible_errors"],
         }
     except Exception as e:
         return {
@@ -103,6 +144,9 @@ def run_test_script(
             "error_summary": str(e),
             "trace_path": None,
             "screenshot_paths": [],
+            "final_url": None,
+            "failure_url": None,
+            "visible_errors": [],
         }
 
 
