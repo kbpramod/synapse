@@ -3,10 +3,14 @@ import logging
 from contextlib import asynccontextmanager
 from pathlib import Path
 
-# Add src to sys.path to enable direct imports across backend modules
+# Add src and virtual environment site-packages to sys.path to enable direct imports across backend modules
 SRC_DIR = Path(__file__).resolve().parent
 if str(SRC_DIR) not in sys.path:
     sys.path.insert(0, str(SRC_DIR))
+
+VENV_SITE_PACKAGES = SRC_DIR.parent / ".venv" / "Lib" / "site-packages"
+if VENV_SITE_PACKAGES.exists() and str(VENV_SITE_PACKAGES) not in sys.path:
+    sys.path.insert(0, str(VENV_SITE_PACKAGES))
 
 def configure_logging() -> None:
     """
@@ -58,6 +62,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from api.website import route as website_router
 from api.cron import router as cron_router
 from api.onboarding import router as onboarding_router
+from api.scheduler import router as scheduler_router
 from db.migrations import init_db
 
 logger = logging.getLogger("forge.main")
@@ -101,6 +106,8 @@ app.include_router(website_router)
 app.include_router(onboarding_router, prefix="/api")
 app.include_router(onboarding_router)
 app.include_router(cron_router, prefix="/api")
+app.include_router(scheduler_router, prefix="/api")
+app.include_router(scheduler_router)
 
 
 

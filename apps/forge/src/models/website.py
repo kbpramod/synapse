@@ -1,6 +1,6 @@
 from datetime import datetime, timezone
 from typing import TYPE_CHECKING, List, Optional
-from sqlalchemy import String, Text, Boolean, DateTime
+from sqlalchemy import String, Text, Boolean, DateTime, Integer
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 from models.base import Base
 
@@ -17,6 +17,7 @@ class Website(Base):
     app_name: Mapped[Optional[str]] = mapped_column(String(255), nullable=True)
     environment: Mapped[Optional[str]] = mapped_column(String(50), nullable=True, default="Production")
     is_active: Mapped[bool] = mapped_column(Boolean, default=True, nullable=False)
+    concurrency_limit: Mapped[int] = mapped_column(Integer, default=2, nullable=False)
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), default=lambda: datetime.now(timezone.utc), nullable=False
     )
@@ -41,6 +42,7 @@ class Website(Base):
             "app_name": self.app_name,
             "environment": self.environment,
             "is_active": self.is_active,
+            "concurrency_limit": self.concurrency_limit,
             "created_at": self.created_at.isoformat() if self.created_at else None,
             "updated_at": self.updated_at.isoformat() if self.updated_at else None,
             "last_discovered_at": self.last_discovered_at.isoformat() if self.last_discovered_at else None,

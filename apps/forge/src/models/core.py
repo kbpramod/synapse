@@ -5,6 +5,7 @@ from sqlalchemy import (
     Text,
     Integer,
     Float,
+    Boolean,
     DateTime,
     ForeignKey,
     UniqueConstraint,
@@ -111,6 +112,9 @@ class Test(Base):
     cron_expression: Mapped[Optional[str]] = mapped_column(String(100), default="0 0 * * *", nullable=True)
     last_run_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True), nullable=True)
     next_run_at: Mapped[Optional[datetime]] = mapped_column(DateTime(timezone=True), nullable=True, index=True)
+    enabled: Mapped[bool] = mapped_column(Boolean, default=True, nullable=False)
+    timezone: Mapped[str] = mapped_column(String(50), default="UTC", nullable=False)
+    schedule_offset_seconds: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
 
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), default=lambda: datetime.now(timezone.utc), nullable=False
@@ -144,6 +148,9 @@ class Test(Base):
             "cron_expression": self.cron_expression,
             "last_run_at": self.last_run_at.isoformat() if self.last_run_at else None,
             "next_run_at": self.next_run_at.isoformat() if self.next_run_at else None,
+            "enabled": self.enabled,
+            "timezone": self.timezone,
+            "schedule_offset_seconds": self.schedule_offset_seconds,
             "created_at": self.created_at.isoformat() if self.created_at else None,
             "updated_at": self.updated_at.isoformat() if self.updated_at else None,
         }

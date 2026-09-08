@@ -386,12 +386,23 @@ class ForgeRepository:
         page_id: Optional[int] = None,
         cron_interval_hours: Optional[int] = 24,
         cron_expression: Optional[str] = None,
+        enabled: bool = True,
+        timezone: str = "UTC",
+        schedule_offset_seconds: int = 0,
     ) -> None:
+        from scheduler.spacing import compute_next_run
+
         if not cron_expression and cron_interval_hours:
             if 24 % cron_interval_hours == 0:
                 cron_expression = f"0 */{cron_interval_hours} * * *"
             else:
                 cron_expression = "0 0 * * *"
+        elif not cron_expression:
+            cron_expression = "0 0 * * *"
+
+        initial_next_run = compute_next_run(
+            cron_expression, schedule_offset_seconds=schedule_offset_seconds, tz_name=timezone
+        )
 
         # Auto-resolve page_id from page_url if not explicitly provided
         if page_id is None and page_url:
@@ -403,11 +414,13 @@ class ForgeRepository:
         INSERT INTO tests (
             test_id, domain, page_url, title, description, category, priority,
             steps, expected_outcome, script_path, test_code, language, status,
-            website_id, page_id, cron_interval_hours, cron_expression, updated_at
+            website_id, page_id, cron_interval_hours, cron_expression,
+            enabled, timezone, schedule_offset_seconds, next_run_at, updated_at
         ) VALUES (
             :test_id, :domain, :page_url, :title, :description, :category, :priority,
             :steps, :expected_outcome, :script_path, :test_code, :language, 'active',
-            :website_id, :page_id, :cron_interval_hours, :cron_expression, NOW()
+            :website_id, :page_id, :cron_interval_hours, :cron_expression,
+            :enabled, :timezone, :schedule_offset_seconds, :next_run_at, NOW()
         )
         ON CONFLICT (test_id) DO UPDATE SET
             title = EXCLUDED.title,
@@ -421,6 +434,10 @@ class ForgeRepository:
             page_id = COALESCE(EXCLUDED.page_id, tests.page_id),
             cron_interval_hours = COALESCE(EXCLUDED.cron_interval_hours, tests.cron_interval_hours),
             cron_expression = COALESCE(EXCLUDED.cron_expression, tests.cron_expression),
+            enabled = EXCLUDED.enabled,
+            timezone = EXCLUDED.timezone,
+            schedule_offset_seconds = EXCLUDED.schedule_offset_seconds,
+            next_run_at = COALESCE(tests.next_run_at, EXCLUDED.next_run_at),
             status = 'active',
             updated_at = NOW();
         """
@@ -444,6 +461,10 @@ class ForgeRepository:
                     "page_id": page_id,
                     "cron_interval_hours": cron_interval_hours,
                     "cron_expression": cron_expression,
+                    "enabled": enabled,
+                    "timezone": timezone,
+                    "schedule_offset_seconds": schedule_offset_seconds,
+                    "next_run_at": initial_next_run,
                 },
             )
 
@@ -682,4 +703,201 @@ class ForgeRepository:
                 "healed_runs": row.get("healed_runs") or 0,
                 "avg_duration_s": round(row.get("avg_duration_s") or 0.0, 2),
             }
+
+    # ==========================================
+    # Scalable Distributed Scheduler Operations
+    # ==========================================
+    @staticmethod
+    def claim_due_tests(batch_size: int = 50) -> List[Dict[str, Any]]:
+        """
+        Atomically selects and locks tests currently due for execution using
+        PostgreSQL `FOR UPDATE SKIP LOCKED`.
+        Inside the same transaction, recalculates and advances their `next_run_at`
+        into the future based on their cron frequency and de-bunching offset.
+        Guarantees that multiple concurrent scheduler/API nodes will NEVER claim
+        or execute the same test twice.
+        """
+        from scheduler.spacing import compute_next_run
+
+        select_sql = """
+        SELECT t.id, t.test_id, t.website_id, t.domain, t.page_url, t.title,
+               t.category, t.priority, t.script_path, t.test_code, t.language,
+               t.cron_expression, t.timezone, t.schedule_offset_seconds,
+               COALESCE(w.concurrency_limit, 2) AS concurrency_limit,
+               w.app_name, w.environment
+        FROM tests t
+        LEFT JOIN websites w ON t.website_id = w.id
+        WHERE t.enabled = TRUE
+          AND t.status = 'active'
+          AND (t.next_run_at <= NOW() OR t.next_run_at IS NULL)
+        ORDER BY
+          CASE t.priority
+            WHEN 'critical' THEN 1
+            WHEN 'high' THEN 2
+            WHEN 'medium' THEN 3
+            ELSE 4
+          END ASC,
+          COALESCE(t.next_run_at, '1970-01-01'::timestamptz) ASC
+        LIMIT :limit
+        FOR UPDATE OF t SKIP LOCKED;
+        """
+
+        update_sql = """
+        UPDATE tests
+        SET next_run_at = :next_run_at,
+            last_run_at = NOW(),
+            updated_at = NOW()
+        WHERE id = :id;
+        """
+
+        claimed = []
+        now_utc = datetime.now(timezone.utc)
+
+        with get_connection() as conn:
+            rows = conn.execute(text(select_sql), {"limit": batch_size}).mappings().all()
+            if not rows:
+                return []
+
+            for r in rows:
+                test_dict = dict(r)
+                cron_expr = test_dict.get("cron_expression") or "0 0 * * *"
+                tz_name = test_dict.get("timezone") or "UTC"
+                offset_s = test_dict.get("schedule_offset_seconds") or 0
+
+                next_run = compute_next_run(cron_expr, now_utc, offset_s, tz_name)
+                conn.execute(
+                    text(update_sql),
+                    {
+                        "id": test_dict["id"],
+                        "next_run_at": next_run,
+                    },
+                )
+                test_dict["claimed_at"] = now_utc.isoformat()
+                test_dict["next_run_at"] = next_run.isoformat()
+                claimed.append(test_dict)
+
+        return claimed
+
+    @staticmethod
+    def get_upcoming_tests(limit: int = 50, domain: Optional[str] = None) -> List[Dict[str, Any]]:
+        """Returns the upcoming test schedules sorted by next_run_at."""
+        sql = """
+        SELECT t.id, t.test_id, t.website_id, t.domain, t.page_url, t.title,
+               t.category, t.priority, t.cron_expression, t.timezone,
+               t.schedule_offset_seconds, t.enabled, t.status,
+               t.last_run_at, t.next_run_at,
+               w.app_name, w.environment,
+               COALESCE(w.concurrency_limit, 2) AS concurrency_limit
+        FROM tests t
+        LEFT JOIN websites w ON t.website_id = w.id
+        WHERE t.enabled = TRUE
+          AND t.status = 'active'
+        """
+        params: Dict[str, Any] = {"limit": limit}
+        if domain:
+            sql += " AND t.domain = :domain"
+            params["domain"] = domain
+        sql += " ORDER BY t.next_run_at ASC NULLS FIRST LIMIT :limit;"
+
+        with get_connection() as conn:
+            rows = conn.execute(text(sql), params).mappings().all()
+            return [dict(r) for r in rows]
+
+    @staticmethod
+    def distribute_tests_schedule(website_id: Optional[int] = None) -> Dict[str, Any]:
+        """
+        Finds active, enabled tests and groups them by frequency window (cron_expression, timezone).
+        Calculates window spacing (W / N) and updates schedule_offset_seconds and next_run_at
+        so executions are evenly staggered across time windows instead of spiking at cron boundaries.
+        """
+        from scheduler.spacing import distribute_cohort
+
+        clauses = ["status = 'active'", "enabled = TRUE"]
+        params: Dict[str, Any] = {}
+        if website_id:
+            clauses.append("website_id = :website_id")
+            params["website_id"] = website_id
+
+        where_sql = " AND ".join(clauses)
+        sql = f"""
+        SELECT id, test_id, website_id, cron_expression, timezone, priority
+        FROM tests
+        WHERE {where_sql}
+        ORDER BY id ASC;
+        """
+
+        with get_connection() as conn:
+            rows = conn.execute(text(sql), params).mappings().all()
+            tests = [dict(r) for r in rows]
+
+            cohorts: Dict[Any, List[Dict[str, Any]]] = {}
+            for t in tests:
+                cron = t.get("cron_expression") or "0 0 * * *"
+                tz = t.get("timezone") or "UTC"
+                cohorts.setdefault((cron, tz), []).append(t)
+
+            now_utc = datetime.now(timezone.utc)
+            total_updated = 0
+            update_sql = """
+            UPDATE tests
+            SET schedule_offset_seconds = :offset,
+                next_run_at = :next_run,
+                updated_at = NOW()
+            WHERE id = :id;
+            """
+
+            for (cron, tz), cohort_tests in cohorts.items():
+                distributed = distribute_cohort(cohort_tests, base_time=now_utc, tz_name=tz)
+                for item in distributed:
+                    conn.execute(
+                        text(update_sql),
+                        {
+                            "id": item["id"],
+                            "offset": item["schedule_offset_seconds"],
+                            "next_run": item["next_run_at"],
+                        },
+                    )
+                    total_updated += 1
+
+            return {
+                "total_tests": len(tests),
+                "cohorts_count": len(cohorts),
+                "updated_count": total_updated,
+            }
+
+    @staticmethod
+    def update_test_scheduler_config(
+        test_id: str,
+        enabled: Optional[bool] = None,
+        cron_expression: Optional[str] = None,
+        timezone: Optional[str] = None,
+        priority: Optional[str] = None,
+        schedule_offset_seconds: Optional[int] = None,
+    ) -> bool:
+        updates = []
+        params: Dict[str, Any] = {"test_id": test_id}
+        if enabled is not None:
+            updates.append("enabled = :enabled")
+            params["enabled"] = enabled
+        if cron_expression is not None:
+            updates.append("cron_expression = :cron_expression")
+            params["cron_expression"] = cron_expression
+        if timezone is not None:
+            updates.append("timezone = :timezone")
+            params["timezone"] = timezone
+        if priority is not None:
+            updates.append("priority = :priority")
+            params["priority"] = priority
+        if schedule_offset_seconds is not None:
+            updates.append("schedule_offset_seconds = :offset")
+            params["offset"] = schedule_offset_seconds
+
+        if not updates:
+            return False
+
+        updates.append("updated_at = NOW()")
+        sql = f"UPDATE tests SET {', '.join(updates)} WHERE test_id = :test_id;"
+        with get_connection() as conn:
+            res = conn.execute(text(sql), params)
+            return res.rowcount > 0
 

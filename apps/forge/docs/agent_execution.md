@@ -87,3 +87,15 @@ To eliminate "black box" behavior when tests fail or elements seem missing, the 
 - **`[HEAL:ELEMENTS_FEED]` & `[HEAL:ELEMENTS_FEED:OMITTED]`**: Details the exact number of buttons, inputs, links, and selects passed into the LLM prompt, prioritizes the targeted selector, and logs what elements were omitted to protect prompt context limits.
 - **`[HEAL:TELEMETRY]`**: Summarizes target URL, failure landing URL, redirect flags, on-screen error banners, available `storage_state`, and registered accounts.
 - **`[HEAL:LLM_RESULT]`**: Displays the final Failure Class, Root-Cause Diagnosis, Fix Plan, and Preserved test assertions.
+
+---
+
+## 5. Distributed Scheduled Execution
+
+Scheduled tests are orchestrated via the Forge Scalable Distributed Scheduler:
+1. **Periodic Claim**: Scheduler nodes periodically select due tests from PostgreSQL using `FOR UPDATE SKIP LOCKED`.
+2. **De-Bunching & Window Spacing**: Recurrence offsets are distributed across frequency windows to eliminate spikes.
+3. **Queueing & Concurrency**: Jobs are placed into Redis priority queues (`critical` > `high` > `medium` > `low`) and respect per-website concurrency limits.
+4. **Worker Consumption**: Independent Playwright workers consume jobs via `BLPOP` and execute the test pipeline (`run_single_test`), recording execution results to `test_runs` and heals to `heals`.
+
+See [scheduler.md](scheduler.md) for full architecture and endpoint specifications.

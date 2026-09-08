@@ -13,6 +13,12 @@ load_dotenv()
 # Database
 DATABASE_URL = os.getenv("DATABASE_URL", "")
 
+# Redis & Scheduler
+REDIS_URL = os.getenv("REDIS_URL", "")
+SCHEDULER_BATCH_SIZE = int(os.getenv("SCHEDULER_BATCH_SIZE", "50"))
+SCHEDULER_POLL_INTERVAL_S = int(os.getenv("SCHEDULER_POLL_INTERVAL_S", "5"))
+DEFAULT_CONCURRENCY_LIMIT = int(os.getenv("FORGE_CONCURRENCY_LIMIT", "2"))
+
 # Storage
 # Durable artifacts (discovery/planner JSON, test scripts, verification reports) live in
 # Supabase Storage now. FORGE_CACHE_ROOT is just a disposable local scratch space used to
