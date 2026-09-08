@@ -84,6 +84,11 @@ Do NOT generate tests that merely check if a static element exists.
 PROHIBITED: "Verify Contact Us button exists", "Verify Login button is visible", "Verify heading is present".
 REQUIRED: Real user interactions that test state transitions and functional outcomes.
 
+DEDUPLICATION & PREVENTING REDUNDANT TESTS:
+You are provided with `existing_tests_for_page`. These test journeys have ALREADY been planned and built for this page.
+DO NOT regenerate, replicate, or duplicate tests that cover these existing intents.
+Only synthesize NEW test hypotheses for newly discovered capabilities, unverified interactive elements, or untested edge cases.
+
 For each test hypothesis, provide strictly:
 - id: Descriptive slug prefixed with type, e.g. "smoke_primary_navigation", "flow_login", "flow_contact_submission"
 - type: Exactly "SMOKE" or "FLOW"
@@ -232,9 +237,31 @@ def planner_node(state: ForgeState) -> Dict[str, Any]:
         logger.warning(f"[JOURNEY PLANNER] Could not load accounts for {target_url}: {acc_err}")
         known_accounts = []
 
+    existing_tests = []
+    try:
+        page_id = state.get("page_id")
+        if page_id:
+            raw_existing = ForgeRepository.get_tests_for_page(page_id)
+        else:
+            raw_existing = ForgeRepository.get_tests_for_page_url(target_url)
+        existing_tests = [
+            {
+                "test_id": t.get("test_id"),
+                "title": t.get("title"),
+                "category": t.get("category"),
+                "expected_outcome": t.get("expected_outcome"),
+            }
+            for t in raw_existing
+        ]
+        if existing_tests:
+            logger.info(f"[JOURNEY PLANNER] Found {len(existing_tests)} existing tests for page '{target_url}' to avoid duplicates.")
+    except Exception as ex_err:
+        logger.debug(f"[JOURNEY PLANNER] Could not query existing page tests: {ex_err}")
+
     planner_input = {
         "url": target_url,
         "known_accounts": known_accounts,
+        "existing_tests_for_page": existing_tests,
         # Grounded assertion catalogue derived from real discovery output, plus an explicit
         # statement of what a page snapshot cannot know (see nodes/expectation.py).
         "assertable_signals": state.get("assertable_signals") or {},

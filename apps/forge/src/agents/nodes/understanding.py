@@ -227,11 +227,25 @@ def understanding_node(state: ForgeState) -> Dict[str, Any]:
     except Exception as save_err:
         logger.warning(f"[PAGE UNDERSTANDING] Could not persist page model to disk: {save_err}")
 
+    page_id: Optional[int] = state.get("page_id")
     try:
         domain = sanitize_domain(url)
-        ForgeRepository.record_page_discovery(domain, page_info, understanding)
+        website_id = state.get("website_id")
+        if not website_id:
+            website = ForgeRepository.get_website_by_url(url)
+            if website:
+                website_id = website["id"]
+        page_row = ForgeRepository.record_page_discovery(
+            domain=domain,
+            page_info=page_info,
+            understanding=understanding,
+            website_id=website_id,
+        )
+        if page_row and "id" in page_row:
+            page_id = page_row["id"]
+            logger.info(f"[PAGE UNDERSTANDING] Page indexed in database: id={page_id}, url='{url}', website_id={website_id}")
     except Exception as db_err:
-        logger.debug(f"[PAGE UNDERSTANDING] Database recording notice: {db_err}")
+        logger.warning(f"[PAGE UNDERSTANDING] Database recording notice: {db_err}")
 
     logger.info(
         f"[PAGE UNDERSTANDING] Identified {len(understanding.get('capabilities', []))} capabilities, "
@@ -242,4 +256,5 @@ def understanding_node(state: ForgeState) -> Dict[str, Any]:
         "page_understanding": understanding,
         "page_model": disc,
         "change_detection": change_detection,
+        "page_id": page_id,
     }

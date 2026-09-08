@@ -73,6 +73,53 @@ def list_website_runs(website_id: int, limit: int = 50):
     }
 
 
+@route.get("/{website_id}/pages")
+def list_website_pages(website_id: int):
+    """Lists all discovered pages for a website with their associated test counts."""
+    website = ForgeRepository.get_website_by_id(website_id)
+    if not website:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"Website ID {website_id} not found.",
+        )
+
+    pages = ForgeRepository.list_pages_for_website(website_id=website_id)
+    return {
+        "website_id": website_id,
+        "domain": website["domain"],
+        "count": len(pages),
+        "pages": pages,
+    }
+
+
+@route.get("/{website_id}/pages/{page_id}/tests")
+def list_page_tests(website_id: int, page_id: int):
+    """Lists all tests linked to a specific discovered page."""
+    website = ForgeRepository.get_website_by_id(website_id)
+    if not website:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"Website ID {website_id} not found.",
+        )
+
+    page = ForgeRepository.get_page_by_id(page_id)
+    if not page or page.get("website_id") != website_id:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"Page ID {page_id} not found for website {website_id}.",
+        )
+
+    tests = ForgeRepository.get_tests_for_page(page_id=page_id)
+    return {
+        "website_id": website_id,
+        "page_id": page_id,
+        "page_url": page.get("url"),
+        "page_title": page.get("title"),
+        "count": len(tests),
+        "tests": tests,
+    }
+
+
 @route.delete("/{website_id}", status_code=status.HTTP_200_OK)
 def delete_website(website_id: int):
     """Deletes a website and cascades deletion to associated accounts and tests."""

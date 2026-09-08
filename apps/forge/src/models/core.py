@@ -19,6 +19,9 @@ class Page(Base):
     __tablename__ = "pages"
 
     id: Mapped[int] = mapped_column(primary_key=True, autoincrement=True)
+    website_id: Mapped[Optional[int]] = mapped_column(
+        ForeignKey("websites.id", ondelete="CASCADE"), nullable=True, index=True
+    )
     domain: Mapped[str] = mapped_column(String(255), nullable=False, index=True)
     url: Mapped[str] = mapped_column(Text, unique=True, nullable=False)
     title: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
@@ -34,6 +37,7 @@ class Page(Base):
     def to_dict(self) -> dict:
         return {
             "id": self.id,
+            "website_id": self.website_id,
             "domain": self.domain,
             "url": self.url,
             "title": self.title,
@@ -86,6 +90,9 @@ class Test(Base):
     website_id: Mapped[Optional[int]] = mapped_column(
         ForeignKey("websites.id", ondelete="CASCADE"), nullable=True, index=True
     )
+    page_id: Mapped[Optional[int]] = mapped_column(
+        ForeignKey("pages.id", ondelete="SET NULL"), nullable=True, index=True
+    )
     domain: Mapped[str] = mapped_column(String(255), nullable=False, index=True)
     page_url: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
     title: Mapped[str] = mapped_column(Text, nullable=False)
@@ -120,6 +127,7 @@ class Test(Base):
             "id": self.id,
             "test_id": self.test_id,
             "website_id": self.website_id,
+            "page_id": self.page_id,
             "domain": self.domain,
             "page_url": self.page_url,
             "title": self.title,

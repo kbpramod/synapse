@@ -88,6 +88,8 @@ class ForgeState(TypedDict, total=False):
     # Target and configuration
     target_url: str
     target_domain: Optional[str]
+    website_id: Optional[int]
+    page_id: Optional[int]
     config: Dict[str, Any]
 
     # Discovery & Understanding

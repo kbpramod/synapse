@@ -250,23 +250,28 @@ class ForgeRepository:
         domain: str,
         page_info: Dict[str, Any],
         understanding: Optional[Dict[str, Any]] = None,
-    ) -> None:
+        website_id: Optional[int] = None,
+    ) -> Dict[str, Any]:
         understanding = understanding or {}
         sql = """
-        INSERT INTO pages (domain, url, title, slug, page_type, purpose, primary_actions, state_preconditions, discovered_at)
-        VALUES (:domain, :url, :title, :slug, :page_type, :purpose, :primary_actions, :state_preconditions, NOW())
+        INSERT INTO pages (website_id, domain, url, title, slug, page_type, purpose, primary_actions, state_preconditions, discovered_at)
+        VALUES (:website_id, :domain, :url, :title, :slug, :page_type, :purpose, :primary_actions, :state_preconditions, NOW())
         ON CONFLICT (url) DO UPDATE SET
+            website_id = COALESCE(EXCLUDED.website_id, pages.website_id),
             title = EXCLUDED.title,
+            slug = COALESCE(EXCLUDED.slug, pages.slug),
             page_type = COALESCE(EXCLUDED.page_type, pages.page_type),
             purpose = COALESCE(EXCLUDED.purpose, pages.purpose),
             primary_actions = COALESCE(EXCLUDED.primary_actions, pages.primary_actions),
             state_preconditions = COALESCE(EXCLUDED.state_preconditions, pages.state_preconditions),
-            discovered_at = NOW();
+            discovered_at = NOW()
+        RETURNING id, website_id, domain, url, title, slug, page_type, purpose, primary_actions, state_preconditions, discovered_at;
         """
         with get_connection() as conn:
-            conn.execute(
+            row = conn.execute(
                 text(sql),
                 {
+                    "website_id": website_id,
                     "domain": domain,
                     "url": page_info.get("url"),
                     "title": page_info.get("title"),
@@ -276,7 +281,61 @@ class ForgeRepository:
                     "primary_actions": json.dumps(understanding.get("primary_actions", [])),
                     "state_preconditions": str(understanding.get("state_preconditions", "")),
                 },
-            )
+            ).mappings().first()
+            return dict(row) if row else {}
+
+    @staticmethod
+    def get_page_by_url(url: str) -> Optional[Dict[str, Any]]:
+        """Retrieves a discovered page by its canonical URL."""
+        sql = "SELECT * FROM pages WHERE url = :url;"
+        with get_connection() as conn:
+            row = conn.execute(text(sql), {"url": url}).mappings().first()
+            return dict(row) if row else None
+
+    @staticmethod
+    def get_page_by_id(page_id: int) -> Optional[Dict[str, Any]]:
+        """Retrieves a discovered page by its primary key ID."""
+        sql = "SELECT * FROM pages WHERE id = :id;"
+        with get_connection() as conn:
+            row = conn.execute(text(sql), {"id": page_id}).mappings().first()
+            return dict(row) if row else None
+
+    @staticmethod
+    def list_pages_for_website(website_id: int) -> List[Dict[str, Any]]:
+        """Lists all discovered pages for a website with their associated test count."""
+        sql = """
+        SELECT p.*, COUNT(t.id) AS test_count
+        FROM pages p
+        LEFT JOIN tests t ON t.page_id = p.id
+        WHERE p.website_id = :website_id
+        GROUP BY p.id
+        ORDER BY p.discovered_at ASC;
+        """
+        with get_connection() as conn:
+            rows = conn.execute(text(sql), {"website_id": website_id}).mappings().fetchall()
+            return [dict(r) for r in rows]
+
+    @staticmethod
+    def get_tests_for_page(page_id: int) -> List[Dict[str, Any]]:
+        """Returns all planned and generated tests linked to a specific page."""
+        sql = "SELECT * FROM tests WHERE page_id = :page_id ORDER BY created_at ASC;"
+        with get_connection() as conn:
+            rows = conn.execute(text(sql), {"page_id": page_id}).mappings().fetchall()
+            return [dict(r) for r in rows]
+
+    @staticmethod
+    def get_tests_for_page_url(page_url: str) -> List[Dict[str, Any]]:
+        """Returns all tests linked to a specific page URL or page record."""
+        sql = """
+        SELECT t.*
+        FROM tests t
+        LEFT JOIN pages p ON t.page_id = p.id
+        WHERE t.page_url = :page_url OR p.url = :page_url
+        ORDER BY t.created_at ASC;
+        """
+        with get_connection() as conn:
+            rows = conn.execute(text(sql), {"page_url": page_url}).mappings().fetchall()
+            return [dict(r) for r in rows]
 
     @staticmethod
     def record_elements(page_url: str, elements: List[Dict[str, Any]]) -> None:
@@ -324,6 +383,7 @@ class ForgeRepository:
         test_code: Optional[str] = None,
         language: str = "typescript",
         website_id: Optional[int] = None,
+        page_id: Optional[int] = None,
         cron_interval_hours: Optional[int] = 24,
         cron_expression: Optional[str] = None,
     ) -> None:
@@ -333,15 +393,21 @@ class ForgeRepository:
             else:
                 cron_expression = "0 0 * * *"
 
+        # Auto-resolve page_id from page_url if not explicitly provided
+        if page_id is None and page_url:
+            resolved_page = ForgeRepository.get_page_by_url(page_url)
+            if resolved_page:
+                page_id = resolved_page["id"]
+
         sql = """
         INSERT INTO tests (
             test_id, domain, page_url, title, description, category, priority,
             steps, expected_outcome, script_path, test_code, language, status,
-            website_id, cron_interval_hours, cron_expression, updated_at
+            website_id, page_id, cron_interval_hours, cron_expression, updated_at
         ) VALUES (
             :test_id, :domain, :page_url, :title, :description, :category, :priority,
             :steps, :expected_outcome, :script_path, :test_code, :language, 'active',
-            :website_id, :cron_interval_hours, :cron_expression, NOW()
+            :website_id, :page_id, :cron_interval_hours, :cron_expression, NOW()
         )
         ON CONFLICT (test_id) DO UPDATE SET
             title = EXCLUDED.title,
@@ -352,6 +418,7 @@ class ForgeRepository:
             test_code = COALESCE(EXCLUDED.test_code, tests.test_code),
             language = EXCLUDED.language,
             website_id = COALESCE(EXCLUDED.website_id, tests.website_id),
+            page_id = COALESCE(EXCLUDED.page_id, tests.page_id),
             cron_interval_hours = COALESCE(EXCLUDED.cron_interval_hours, tests.cron_interval_hours),
             cron_expression = COALESCE(EXCLUDED.cron_expression, tests.cron_expression),
             status = 'active',
@@ -374,6 +441,7 @@ class ForgeRepository:
                     "test_code": test_code,
                     "language": language,
                     "website_id": website_id,
+                    "page_id": page_id,
                     "cron_interval_hours": cron_interval_hours,
                     "cron_expression": cron_expression,
                 },

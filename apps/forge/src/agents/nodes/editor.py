@@ -304,6 +304,7 @@ def editor_node(state: ForgeState) -> Dict[str, Any]:
                 script_path=str(test_path),
                 test_code=edited_code,
                 language="python" if test_path.suffix == ".py" else "typescript",
+                page_id=state.get("page_id"),
             )
         except Exception as db_err:
             logger.warning(f"[EDITOR] Could not update test in database: {db_err}")

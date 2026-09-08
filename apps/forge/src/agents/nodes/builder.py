@@ -417,6 +417,13 @@ test.describe('[{test_type}] {current_test.get("category", "regression").capital
         website = ForgeRepository.get_website_by_url(target_url)
         website_id = website["id"] if website else None
 
+        # Resolve page_id from state or database
+        page_id = state.get("page_id")
+        if not page_id and target_url:
+            page_record = ForgeRepository.get_page_by_url(target_url)
+            if page_record:
+                page_id = page_record["id"]
+
         # Determine cron timings (e.g. 6 hours for SMOKE sanity checks, 24 hours for FLOW journeys)
         cron_hours = current_test.get("cron_interval_hours") or (6 if test_type == "SMOKE" else 24)
 
@@ -441,6 +448,7 @@ test.describe('[{test_type}] {current_test.get("category", "regression").capital
             test_code=code,
             language="python" if is_python else "typescript",
             website_id=website_id,
+            page_id=page_id,
             cron_interval_hours=cron_hours,
         )
     except Exception as db_err:
