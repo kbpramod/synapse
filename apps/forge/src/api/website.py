@@ -20,7 +20,12 @@ def create_or_upsert_website(request: WebsiteCreate):
         )
     url = request.url.strip()
     try:
-        website_row = ForgeRepository.create_website(url=url, is_active=request.is_active)
+        website_row = ForgeRepository.create_website(
+            url=url,
+            is_active=request.is_active,
+            app_name=request.app_name,
+            environment=request.environment,
+        )
         return WebsiteResponse.model_validate(website_row)
     except Exception as e:
         logger.error(f"[WEBSITE API] Failed to create website '{url}': {e}")

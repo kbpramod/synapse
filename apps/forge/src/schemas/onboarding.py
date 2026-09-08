@@ -1,5 +1,5 @@
 from typing import Any, Dict, List, Optional
-from pydantic import BaseModel, ConfigDict
+from pydantic import BaseModel, ConfigDict, Field, AliasChoices
 from schemas.website import WebsiteResponse
 from schemas.account import AccountResponse
 
@@ -14,11 +14,15 @@ class OnboardingAccountInput(BaseModel):
 
 class OnboardingWebsiteInput(BaseModel):
     url: str
+    app_name: Optional[str] = Field(None, validation_alias=AliasChoices("app_name", "appName"))
+    environment: Optional[str] = None
     is_active: bool = True
 
 
 class OnboardingRequest(BaseModel):
     url: Optional[str] = None
+    app_name: Optional[str] = Field(None, validation_alias=AliasChoices("app_name", "appName"))
+    environment: Optional[str] = None
     is_active: bool = True
     website: Optional[OnboardingWebsiteInput] = None
     accounts: List[OnboardingAccountInput] = []

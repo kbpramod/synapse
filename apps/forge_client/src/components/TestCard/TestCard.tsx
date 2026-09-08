@@ -29,12 +29,15 @@ function TestCard({
   onToggle,
   onRunNow,
 }: TestCardProps) {
-  const isPassed = result?.status === "PASSED";
-  const statusLabel = result ? RESULT_LABELS[result.status] : "PENDING";
+  const normStatus = result?.status ? result.status.trim().toUpperCase() : "";
+  const isPassed = normStatus === "PASSED" || normStatus === "PASS" || normStatus === "SUCCESS";
+  const statusLabel = result
+    ? RESULT_LABELS[result.status as keyof typeof RESULT_LABELS] || result.status
+    : "PENDING";
   const statusClass = result
     ? isPassed
       ? "pass"
-      : result.status === "CONFIRMED_BUG"
+      : normStatus === "CONFIRMED_BUG" || normStatus === "BUG"
       ? "bug"
       : "fail"
     : "pending";

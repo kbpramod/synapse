@@ -14,49 +14,80 @@ class ForgeRepository:
     """
 
     @staticmethod
-    def create_website(url: str, is_active: bool = True) -> Dict[str, Any]:
-        """Creates or updates a website by URL."""
+    def create_website(
+        url: str,
+        is_active: bool = True,
+        app_name: Optional[str] = None,
+        environment: Optional[str] = None,
+    ) -> Dict[str, Any]:
+        """Creates or updates a website by URL, storing app_name and environment."""
         from storage.local import sanitize_domain
         domain = sanitize_domain(url)
         sql = """
-        INSERT INTO websites (url, domain, is_active, created_at, updated_at)
-        VALUES (:url, :domain, :is_active, NOW(), NOW())
+        INSERT INTO websites (url, domain, app_name, environment, is_active, created_at, updated_at)
+        VALUES (:url, :domain, :app_name, :environment, :is_active, NOW(), NOW())
         ON CONFLICT (url) DO UPDATE SET
             domain = EXCLUDED.domain,
+            app_name = COALESCE(EXCLUDED.app_name, websites.app_name),
+            environment = COALESCE(EXCLUDED.environment, websites.environment),
             is_active = EXCLUDED.is_active,
             updated_at = NOW()
-        RETURNING id, url, domain, is_active, created_at, updated_at, last_discovered_at;
+        RETURNING id, url, domain, app_name, environment, is_active, created_at, updated_at, last_discovered_at;
         """
         with get_connection() as conn:
-            row = conn.execute(text(sql), {"url": url, "domain": domain, "is_active": is_active}).mappings().first()
+            row = conn.execute(
+                text(sql),
+                {
+                    "url": url,
+                    "domain": domain,
+                    "app_name": app_name,
+                    "environment": environment,
+                    "is_active": is_active,
+                },
+            ).mappings().first()
             return dict(row) if row else {}
 
     @staticmethod
-    def upsert_website(domain: str, start_url: str) -> Dict[str, Any]:
+    def upsert_website(
+        domain: str,
+        start_url: str,
+        app_name: Optional[str] = None,
+        environment: Optional[str] = None,
+    ) -> Dict[str, Any]:
         """Upserts a website by start_url."""
         sql = """
-        INSERT INTO websites (url, domain, is_active, created_at, updated_at, last_discovered_at)
-        VALUES (:url, :domain, TRUE, NOW(), NOW(), NOW())
+        INSERT INTO websites (url, domain, app_name, environment, is_active, created_at, updated_at, last_discovered_at)
+        VALUES (:url, :domain, :app_name, :environment, TRUE, NOW(), NOW(), NOW())
         ON CONFLICT (url) DO UPDATE SET
             domain = EXCLUDED.domain,
+            app_name = COALESCE(EXCLUDED.app_name, websites.app_name),
+            environment = COALESCE(EXCLUDED.environment, websites.environment),
             updated_at = NOW(),
             last_discovered_at = NOW()
-        RETURNING id, url, domain, is_active, created_at, updated_at, last_discovered_at;
+        RETURNING id, url, domain, app_name, environment, is_active, created_at, updated_at, last_discovered_at;
         """
         with get_connection() as conn:
-            row = conn.execute(text(sql), {"url": start_url, "domain": domain}).mappings().first()
+            row = conn.execute(
+                text(sql),
+                {
+                    "url": start_url,
+                    "domain": domain,
+                    "app_name": app_name,
+                    "environment": environment,
+                },
+            ).mappings().first()
             return dict(row) if row else {}
 
     @staticmethod
     def get_website_by_id(website_id: int) -> Optional[Dict[str, Any]]:
-        sql = "SELECT id, url, domain, is_active, created_at, updated_at, last_discovered_at FROM websites WHERE id = :id;"
+        sql = "SELECT id, url, domain, app_name, environment, is_active, created_at, updated_at, last_discovered_at FROM websites WHERE id = :id;"
         with get_connection() as conn:
             row = conn.execute(text(sql), {"id": website_id}).mappings().first()
             return dict(row) if row else None
 
     @staticmethod
     def get_website_by_url(url: str) -> Optional[Dict[str, Any]]:
-        sql = "SELECT id, url, domain, is_active, created_at, updated_at, last_discovered_at FROM websites WHERE url = :url;"
+        sql = "SELECT id, url, domain, app_name, environment, is_active, created_at, updated_at, last_discovered_at FROM websites WHERE url = :url;"
         with get_connection() as conn:
             row = conn.execute(text(sql), {"url": url}).mappings().first()
             return dict(row) if row else None
@@ -127,9 +158,9 @@ class ForgeRepository:
     @staticmethod
     def list_websites(active_only: bool = False) -> List[Dict[str, Any]]:
         if active_only:
-            sql = "SELECT id, url, domain, is_active, created_at, updated_at, last_discovered_at FROM websites WHERE is_active = TRUE ORDER BY id ASC;"
+            sql = "SELECT id, url, domain, app_name, environment, is_active, created_at, updated_at, last_discovered_at FROM websites WHERE is_active = TRUE ORDER BY id ASC;"
         else:
-            sql = "SELECT id, url, domain, is_active, created_at, updated_at, last_discovered_at FROM websites ORDER BY id ASC;"
+            sql = "SELECT id, url, domain, app_name, environment, is_active, created_at, updated_at, last_discovered_at FROM websites ORDER BY id ASC;"
         with get_connection() as conn:
             rows = conn.execute(text(sql)).mappings().all()
             return [dict(r) for r in rows]

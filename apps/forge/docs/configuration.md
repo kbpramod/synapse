@@ -11,6 +11,10 @@ Configuration is loaded from the root `.env` file or from environment variables.
 | `FORGE_HEADLESS` / `HEADLESS` | `true` | Controls browser execution mode. Set to `false`, `0`, `no`, or `headed` to run visible/headed browsers. |
 | `FORGE_STORAGE_ROOT` | `<project_root>/storage` | Root directory where generated test scripts, screenshots, and page discovery files are persisted. |
 | `DATABASE_URL` | `""` | Neon PostgreSQL database connection string (schema: `forge`). |
+| `SUPABASE_URL` | `""` | Supabase project URL for durable artifact storage. |
+| `SUPABASE_SECRET_KEY` | `""` | Supabase service/secret key for storage operations. |
+| `SUPABASE_STORAGE_BUCKET` | `"tzylo"` | Supabase Storage bucket name (e.g. `forge`). |
+| `SUPABASE_STORAGE_PREFIX` | `"forge"` | Directory/path prefix inside the storage bucket. |
 | `AICREDITS_API_KEY` | `""` | API key for LLM orchestration (Page Understanding, Planning, Code Generation, Healing). |
 | `AICREDITS_BASE_URL` | `https://api.aicredits.in/v1` | Base URL for LLM chat completion endpoint. |
 | `AICREDITS_MODEL` | `gpt-4o-mini` | Default chat model used by the agents. |
@@ -68,7 +72,7 @@ Forge isolates all its persistence models and migration tracking inside a dedica
 
 ### Schema Architecture
 - **Isolated Tables**:
-  - `forge.websites`: Discovered websites and domain metadata
+  - `forge.websites`: Discovered websites, domain metadata, application name (`app_name`), and testing environment (`environment`)
   - `forge.accounts`: Authentication credentials and role-based test users
   - `forge.pages`: Crawled page maps, URLs, preconditions, and primary actions
   - `forge.elements`: Identified interactive DOM elements and selectors

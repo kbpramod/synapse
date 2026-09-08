@@ -14,6 +14,8 @@ class Website(Base):
     id: Mapped[int] = mapped_column(primary_key=True, autoincrement=True)
     url: Mapped[str] = mapped_column(Text, unique=True, nullable=False, index=True)
     domain: Mapped[str] = mapped_column(String(255), nullable=False, index=True)
+    app_name: Mapped[Optional[str]] = mapped_column(String(255), nullable=True)
+    environment: Mapped[Optional[str]] = mapped_column(String(50), nullable=True, default="Production")
     is_active: Mapped[bool] = mapped_column(Boolean, default=True, nullable=False)
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), default=lambda: datetime.now(timezone.utc), nullable=False
@@ -36,6 +38,8 @@ class Website(Base):
             "id": self.id,
             "url": self.url,
             "domain": self.domain,
+            "app_name": self.app_name,
+            "environment": self.environment,
             "is_active": self.is_active,
             "created_at": self.created_at.isoformat() if self.created_at else None,
             "updated_at": self.updated_at.isoformat() if self.updated_at else None,

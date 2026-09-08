@@ -27,6 +27,8 @@ def test_onboarding_api_full_flow():
         print("\n[STEP 1] Testing POST /api/onboarding with website & 2 accounts...")
         payload = {
             "url": test_url,
+            "app_name": "My Verification Portal",
+            "environment": "Staging",
             "is_active": True,
             "accounts": [
                 {
@@ -54,11 +56,15 @@ def test_onboarding_api_full_flow():
         print(f"  Response Message : {data['message']}")
         print(f"  Website ID       : {data['website']['id']}")
         print(f"  Website Domain   : {data['website']['domain']}")
+        print(f"  App Name         : {data['website'].get('app_name')}")
+        print(f"  Environment      : {data['website'].get('environment')}")
         print(f"  Accounts Saved   : {len(data['accounts'])}")
 
         website_id = data["website"]["id"]
         assert data["status"] == "success"
         assert data["website"]["domain"] == "onboard-api-verify.com"
+        assert data["website"]["app_name"] == "My Verification Portal"
+        assert data["website"]["environment"] == "Staging"
         assert len(data["accounts"]) == 2
 
         # 2. Verify persistence directly in PostgreSQL via ForgeRepository

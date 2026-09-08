@@ -25,12 +25,30 @@ def onboard_website_and_accounts(request: OnboardingRequest, background_tasks: B
     - Upserts the website record (url, domain, is_active, timestamps).
     - Upserts one or many associated test accounts (username, password, role, credentials JSON).
     """
-    # 1. Resolve URL from either root level or nested website object
+    # 1. Resolve URL, application name, and environment from either root level or nested website object
     target_url = request.url
     is_active = request.is_active
+    app_name = request.app_name
+    environment = request.environment
+
     if not target_url and request.website:
         target_url = request.website.url
         is_active = request.website.is_active
+        if not app_name:
+            app_name = request.website.app_name
+        if not environment:
+            environment = request.website.environment
+
+    # Fallback: Extract app_name or environment from accounts' credentials if omitted at top-level
+    if (not app_name or not environment) and request.accounts:
+        for acc in request.accounts:
+            creds = acc.credentials or {}
+            if not app_name:
+                app_name = creds.get("app_name") or creds.get("appName")
+            if not environment:
+                environment = creds.get("environment")
+            if app_name and environment:
+                break
 
     if not target_url or not target_url.strip():
         raise HTTPException(
@@ -39,11 +57,18 @@ def onboard_website_and_accounts(request: OnboardingRequest, background_tasks: B
         )
 
     target_url = target_url.strip()
-    logger.info(f"[ONBOARDING API] Onboarding website: {target_url} with {len(request.accounts)} account(s)...")
+    logger.info(
+        f"[ONBOARDING API] Onboarding website: {target_url} (App: {app_name}, Env: {environment}) with {len(request.accounts)} account(s)..."
+    )
 
     # 2. Persist website into database
     try:
-        website_row = ForgeRepository.create_website(url=target_url, is_active=is_active)
+        website_row = ForgeRepository.create_website(
+            url=target_url,
+            is_active=is_active,
+            app_name=app_name,
+            environment=environment,
+        )
         # Publish event for website creation
         publish_event(website_row["id"], f"Website created with ID {website_row['id']}")
     except Exception as e:

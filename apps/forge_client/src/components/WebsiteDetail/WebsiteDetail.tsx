@@ -32,6 +32,25 @@ function formatTimestamp(value: string | null) {
   return value ? new Date(value).toLocaleString() : "never";
 }
 
+function getRunStatusClass(status: string | null | undefined, exitCode?: number) {
+  const s = (status || "").trim().toUpperCase();
+  if (
+    s === "PASSED" ||
+    s === "PASS" ||
+    s === "SUCCESS" ||
+    (exitCode === 0 && !s.includes("FAIL") && !s.includes("BUG"))
+  ) {
+    return "pass";
+  }
+  if (s === "CONFIRMED_BUG" || s === "BUG") {
+    return "bug";
+  }
+  if (s === "PENDING" || s === "RUNNING" || s === "IDLE") {
+    return "pending";
+  }
+  return "fail";
+}
+
 function WebsiteDetail() {
   const { websiteId } = useParams();
   const navigate = useNavigate();
@@ -494,11 +513,12 @@ function WebsiteDetail() {
                       </td>
                       <td>
                         <span
-                          className={`status ${
-                            run.status === "PASSED" ? "pass" : "fail"
-                          }`}
+                          className={`status ${getRunStatusClass(
+                            run.status,
+                            run.exit_code
+                          )}`}
                         >
-                          {run.status}
+                          {run.status || (run.exit_code === 0 ? "PASSED" : "FAILED")}
                         </span>
                       </td>
                       <td className="table-duration">{run.duration_s}s</td>
