@@ -148,6 +148,16 @@ class TestTranscriptIngestion(unittest.TestCase):
 
     def setUp(self):
         Base.metadata.create_all(bind=test_engine)
+        app.dependency_overrides[db_get_db] = override_get_db
+        app.dependency_overrides[src_get_db] = override_get_db
+        for dep_module in (api.deps, src.api.deps):
+            if hasattr(dep_module, "require_auth"):
+                app.dependency_overrides[dep_module.require_auth] = mock_authenticated_user
+            if hasattr(dep_module, "get_current_user"):
+                app.dependency_overrides[dep_module.get_current_user] = mock_authenticated_user
+            if hasattr(dep_module, "optional_auth"):
+                app.dependency_overrides[dep_module.optional_auth] = mock_authenticated_user
+
         self.mock_storage = AsyncMock()
         self.mock_storage.upload.return_value = "transcripts/test/file.txt"
         self.mock_storage.get.return_value = b"sample transcript content"

@@ -44,6 +44,7 @@ from api.meetings import router as meetings_router
 from api.query import router as query_router
 from api.identity import router as identity_router
 from api.work_items import router as work_items_router
+from api.organizations import router as organizations_router
 
 app = FastAPI(
     title="Tzylo — Engineering Memory Assistant API",
@@ -85,6 +86,8 @@ async def custom_http_exception_handler(request: Request, exc: HTTPException):
 
 
 # 3. Include Routers
+app.include_router(organizations_router, prefix="/api/v1/organizations")
+app.include_router(organizations_router, prefix="/organizations", include_in_schema=False)
 app.include_router(meetings_router)
 app.include_router(query_router)
 app.include_router(identity_router)

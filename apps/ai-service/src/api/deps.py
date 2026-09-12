@@ -6,7 +6,7 @@ from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from sqlalchemy.orm import Session
 
 try:
-    from src.db.session import get_db
+    from db.session import get_db
     from models.user import User
     from models.organization import Organization
     from models.organization_member import OrganizationMember
@@ -142,24 +142,42 @@ async def get_current_user(
         if existing_membership:
             clerk_org_id = existing_membership.organization_id
 
-    # Strictly require organization
+    # If still not found, query Clerk for user's organization memberships
     if not clerk_org_id:
-        logger.warning(f"[AUTH] User '{clerk_user_id}' attempted request without active organization.")
-        raise HTTPException(
-            status_code=status.HTTP_403_FORBIDDEN,
-            detail="Organization is required for all members. Please select or join an active organization.",
-            headers={"WWW-Authenticate": "Bearer"},
-        )
+        try:
+            from services.clerk_service import clerk_service
+            user_memberships = clerk_service.sync_user_organization_memberships(db, user)
+            if user_memberships:
+                clerk_org_id = user_memberships[0].organization_id
+        except Exception as exc:
+            logger.debug(f"[AUTH] Could not fetch memberships from Clerk for {user.id}: {exc}")
+
+    # If no active organization is present, allow user through with empty org context
+    if not clerk_org_id:
+        user.organization_id = None
+        user.current_organization = None
+        user.organization_role = None
+        user.organization_slug = None
+        return user
 
     # 6. Auto-provision Organization if not already in DB
     org = db.query(Organization).filter(Organization.id == clerk_org_id).first()
+    payload_org_name = (
+        payload.get("org_name")
+        or payload.get("org_slug")
+        or request.headers.get("x-organization-name")
+    )
+
     if not org:
-        org_name = (
-            payload.get("org_name")
-            or payload.get("org_slug")
-            or request.headers.get("x-organization-name")
-            or f"Organization {clerk_org_id}"
-        )
+        try:
+            from services.clerk_service import clerk_service
+            clerk_service.sync_organization_and_members(db, clerk_org_id, fallback_name=payload_org_name)
+            org = db.query(Organization).filter(Organization.id == clerk_org_id).first()
+        except Exception as exc:
+            logger.debug(f"[AUTH] Live Clerk sync for org {clerk_org_id} failed: {exc}")
+
+    if not org:
+        org_name = payload_org_name or f"Organization {clerk_org_id}"
         org = Organization(
             id=clerk_org_id,
             name=org_name
@@ -171,6 +189,13 @@ async def get_current_user(
         except Exception:
             db.rollback()
             org = db.query(Organization).filter(Organization.id == clerk_org_id).first()
+    elif payload_org_name and org.name.startswith("Organization ") and org.name != payload_org_name:
+        org.name = payload_org_name
+        try:
+            db.commit()
+            db.refresh(org)
+        except Exception:
+            db.rollback()
 
     # 7. Auto-provision / Ensure OrganizationMember relationship
     membership = db.query(OrganizationMember).filter(
@@ -202,6 +227,7 @@ async def get_current_user(
     user.organization_id = clerk_org_id
     user.current_organization = org
     user.organization_role = getattr(membership, "role", "member")
+    user.organization_slug = payload.get("org_slug")
 
     return user
 
@@ -248,6 +274,18 @@ async def get_current_organization(
             detail="Active organization not found."
         )
     return org
+
+
+async def require_active_org(
+    user: User = Depends(get_current_user)
+) -> User:
+    """Dependency that ensures the authenticated user has an active organization."""
+    if not getattr(user, "organization_id", None):
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Organization is required for all members. Please select or join an active organization."
+        )
+    return user
 
 
 # Dependency aliases

@@ -99,6 +99,11 @@ async def upload_transcript_file(
     try:
         file_bytes = await file.read()
         org_id = getattr(user, "organization_id", None) if user else None
+        if not org_id:
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail="Organization is required for all members. Please select or join an active organization."
+            )
         user_id = getattr(user, "id", None) if user else None
 
         result = await transcript_ingestion_service.ingest_file_transcript(
@@ -110,6 +115,8 @@ async def upload_transcript_file(
             org_id=org_id
         )
         return result
+    except HTTPException:
+        raise
     except (TranscriptParseError, ValueError) as exc:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
@@ -150,6 +157,11 @@ async def ingest_pasted_transcript(
     """
     try:
         org_id = getattr(user, "organization_id", None) if user else None
+        if not org_id:
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail="Organization is required for all members. Please select or join an active organization."
+            )
         user_id = getattr(user, "id", None) if user else None
 
         result = await transcript_ingestion_service.ingest_pasted_transcript(
@@ -160,6 +172,8 @@ async def ingest_pasted_transcript(
             org_id=org_id
         )
         return result
+    except HTTPException:
+        raise
     except (TranscriptParseError, ValueError) as exc:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
