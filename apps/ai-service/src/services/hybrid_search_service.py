@@ -4,10 +4,10 @@ from typing import List, Dict, Any, Optional
 from sqlalchemy.orm import Session
 from sqlalchemy import text, or_
 
-from src.models.event_node import EventNode
-from src.models.event_relationship import EventRelationship
-from src.models.knowledge_node import KnowledgeNode
-from src.models.work_item import WorkItem
+from models.event_node import EventNode
+from models.event_relationship import EventRelationship
+from models.knowledge_node import KnowledgeNode
+from models.work_item import WorkItem
 from src.ai.embedding_service import embedding_service
 
 

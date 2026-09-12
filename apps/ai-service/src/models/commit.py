@@ -8,9 +8,9 @@ from sqlalchemy.orm import Mapped, mapped_column, relationship
 from src.db.database import Base
 
 if TYPE_CHECKING:
-    from src.models.pull_request import PullRequest
-    from src.models.github_user import GithubUser
-    from src.models.repository import GithubRepository
+    from models.pull_request import PullRequest
+    from models.github_user import GithubUser
+    from models.repository import GithubRepository
 
 
 class Commit(Base):

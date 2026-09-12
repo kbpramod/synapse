@@ -2,10 +2,10 @@ from datetime import datetime
 from typing import Optional, List, Tuple
 from sqlalchemy.orm import Session
 
-from src.models.event_node import EventNode
-from src.models.event_relationship import EventRelationship
-from src.models.knowledge_node import KnowledgeNode
-from src.models.work_item import WorkItem
+from models.event_node import EventNode
+from models.event_relationship import EventRelationship
+from models.knowledge_node import KnowledgeNode
+from models.work_item import WorkItem
 from src.repositories.event_repository import event_repository
 from src.repositories.knowledge_repository import knowledge_repository
 from src.schemas.event import EventCreate, MeetingIngestRequest

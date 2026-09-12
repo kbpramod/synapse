@@ -3,7 +3,7 @@ from uuid import uuid4
 from typing import Optional, List, Dict, Any
 from sqlalchemy.orm import Session
 
-from src.models.fact import Fact
+from models.fact import Fact
 from src.ai.embedding_service import embedding_service
 
 

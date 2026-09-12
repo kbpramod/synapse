@@ -1,3 +1,3 @@
-from src.models.repository import GithubRepository, Repository
+from models.repository import GithubRepository, Repository
 
 __all__ = ["GithubRepository", "Repository"]

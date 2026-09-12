@@ -2,8 +2,8 @@ from typing import Optional, List
 from sqlalchemy.orm import Session
 from sqlalchemy import or_, and_, desc
 
-from src.models.event_node import EventNode
-from src.models.event_relationship import EventRelationship
+from models.event_node import EventNode
+from models.event_relationship import EventRelationship
 
 
 class EventRepository:

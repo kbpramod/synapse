@@ -2,7 +2,7 @@ import re
 from typing import Optional, List, Dict, Any, Tuple
 from sqlalchemy.orm import Session
 
-from src.models.person import Person, IdentityLink
+from models.person import Person, IdentityLink
 
 
 class IdentityService:

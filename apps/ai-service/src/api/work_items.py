@@ -3,9 +3,9 @@ from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy.orm import Session
 
 from src.db.session import get_db
-from src.models.work_item import WorkItem
-from src.models.event_node import EventNode
-from src.models.person import Person
+from models.work_item import WorkItem
+from models.event_node import EventNode
+from models.person import Person
 
 router = APIRouter(prefix="/api/work-items", tags=["Work Items"])
 

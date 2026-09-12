@@ -4,7 +4,7 @@ from pydantic import BaseModel
 from sqlalchemy.orm import Session
 
 from src.db.session import get_db
-from src.models.person import Person, IdentityLink
+from models.person import Person, IdentityLink
 from src.services.identity_service import identity_service
 
 router = APIRouter(prefix="/api/identities", tags=["Identity Resolution"])

@@ -9,13 +9,13 @@ from typing import Optional, List, Dict, Any
 import jwt
 from sqlalchemy.orm import Session
 
-from src.models.github_installation import GithubInstallation
-from src.models.repository import GithubRepository, Repository
-from src.models.github_event import GithubEvent
-from src.models.github_user import GithubUser
-from src.models.pull_request import PullRequest
-from src.models.commit import Commit
-from src.models.person import Person
+from models.github_installation import GithubInstallation
+from models.repository import GithubRepository, Repository
+from models.github_event import GithubEvent
+from models.github_user import GithubUser
+from models.pull_request import PullRequest
+from models.commit import Commit
+from models.person import Person
 from src.services.identity_service import identity_service
 
 def parse_github_timestamp(ts_str: str | None) -> datetime:

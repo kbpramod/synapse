@@ -2,7 +2,7 @@ from sqlalchemy.orm import Session
 
 from src.ai.embedding_service import embedding_service
 from src.ai.llm_service import llm_service
-from src.models.knowledge_node import KnowledgeNode
+from models.knowledge_node import KnowledgeNode
 from src.repositories.knowledge_repository import knowledge_repository
 from src.schemas.memory import MemoryUpdateRequest
 
@@ -120,4 +120,4 @@ class MemoryService:
         return results
 
 
-memory_service = MemoryService()
+memory_service = MemoryService()

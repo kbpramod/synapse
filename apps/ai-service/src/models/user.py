@@ -8,11 +8,12 @@ from sqlalchemy.orm import Mapped, mapped_column, relationship
 from src.db.database import Base
 
 if TYPE_CHECKING:
-    from src.models.organization_member import OrganizationMember
+    from models.organization_member import OrganizationMember
 
 
 class User(Base):
     __tablename__ = "users"
+    __table_args__ = {'extend_existing': True}
 
     id: Mapped[str] = mapped_column(
         String,

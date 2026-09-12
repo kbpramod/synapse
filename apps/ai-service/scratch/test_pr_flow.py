@@ -12,8 +12,8 @@ if hasattr(sys.stdout, "reconfigure"):
 
 load_dotenv()
 from src.db.session import SessionLocal
-import src.models
-from src.models import (
+import models
+from models import (
     User,
     Organization,
     GithubInstallation,

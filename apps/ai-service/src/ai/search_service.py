@@ -1,7 +1,7 @@
 from sqlalchemy.orm import Session
 
 from src.ai.embedding_service import embedding_service
-from src.models.knowledge_node import KnowledgeNode
+from models.knowledge_node import KnowledgeNode
 from src.repositories.knowledge_repository import knowledge_repository
 
 

@@ -1,3 +1,4 @@
+import asyncio
 import logging
 from datetime import datetime
 from typing import Optional, List, Dict, Any, Tuple
@@ -7,15 +8,16 @@ from sqlalchemy.orm import Session
 from db.database import SessionLocal
 from models.meeting import Meeting
 from models.user import User
-from src.models.event_node import EventNode
-from src.models.knowledge_node import KnowledgeNode
-from src.models.work_item import WorkItem
-from src.models.person import Person
+from models.event_node import EventNode
+from models.knowledge_node import KnowledgeNode
+from models.work_item import WorkItem
+from models.person import Person
 from src.schemas.meeting import MeetingSubmitRequest
 from src.schemas.event import EventCreate
 from src.services.identity_service import identity_service
 from src.services.fact_service import fact_service
 from src.services.event_service import event_service
+from src.services.meeting_live_broadcaster import meeting_live_broadcaster
 from src.ai.llm_service import llm_service
 from src.ai.embedding_service import embedding_service
 from src.transcription.factory import get_transcript_provider
@@ -63,6 +65,19 @@ class MeetingService:
         db.add(meeting)
         db.commit()
         db.refresh(meeting)
+
+        # Register mapping and trigger upstream Vexa WebSocket listener
+        meeting_live_broadcaster.register_meeting_mapping(
+            meeting_id=meeting.id,
+            native_meeting_id=native_meeting_id
+        )
+        asyncio.create_task(
+            meeting_live_broadcaster.ensure_upstream_subscribed(
+                native_meeting_id=native_meeting_id,
+                meeting_id=meeting.id,
+                platform=meeting.platform or "google_meet"
+            )
+        )
 
         logger.info(f"[MEETING CREATED] Started meeting id='{meeting.id}', native_id='{native_meeting_id}', status='{meeting.status}'")
         return meeting

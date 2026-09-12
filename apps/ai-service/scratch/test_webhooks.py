@@ -11,8 +11,8 @@ sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..")
 
 load_dotenv()
 from src.db.session import SessionLocal
-import src.models
-from src.models import (
+import models
+from models import (
     User,
     Organization,
     OrganizationMember,

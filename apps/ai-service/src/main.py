@@ -4,43 +4,46 @@ from fastapi.responses import JSONResponse
 from sqlalchemy.orm import Session
 from sqlalchemy import text
 
-from src.db.session import get_db
-from src.db.database import engine, Base
+from db.session import get_db
+from db.database import engine, Base
 
 # Import all SQLAlchemy models to register with Base metadata
 from models.user import User
-from src.models.organization import Organization
-from src.models.organization_member import OrganizationMember
-from src.models.project import Project
-from src.models.repository import Repository, GithubRepository
-from src.models.doc_page import DocPage
-from src.models.github_install_state import GithubInstallState
-from src.models.github_installation import GithubInstallation
-from src.models.knowledge_node import KnowledgeNode
-from src.models.person import Person, IdentityLink
-from src.models.work_item import WorkItem
-from src.models.event_node import EventNode
-from src.models.event_relationship import EventRelationship
-from src.models.github_event import GithubEvent
-from src.models.github_user import GithubUser
-from src.models.pull_request import PullRequest
-from src.models.commit import Commit
-from src.models.fact import Fact
+from models.organization import Organization
+from models.organization_member import OrganizationMember
+from models.project import Project
+from models.repository import Repository, GithubRepository
+from models.doc_page import DocPage
+from models.github_install_state import GithubInstallState
+from models.github_installation import GithubInstallation
+from models.knowledge_node import KnowledgeNode
+from models.person import Person, IdentityLink
+from models.work_item import WorkItem
+from models.event_node import EventNode
+from models.event_relationship import EventRelationship
+from models.github_event import GithubEvent
+from models.github_user import GithubUser
+from models.pull_request import PullRequest
+from models.commit import Commit
+from models.fact import Fact
 from models.meeting import Meeting
+from models.decision import Decision
+from models.task import Task
+from models.knowledge import Knowledge
 
 # Import API Routers
-from src.api.user import router as user_router
-from src.api.onboarding import router as onboarding_router
-from src.api.projects import router as projects_router
-from src.api.repositories import router as repositories_router
-from src.api.memory import router as memory_router
-from src.api.webhooks import router as webhooks_router
-from src.api.github import router as github_router, github_installation_setup_callback
-from src.api.events import router as events_router
-from src.api.meetings import router as meetings_router, v1_router as meetings_v1_router
-from src.api.query import router as query_router
-from src.api.identity import router as identity_router
-from src.api.work_items import router as work_items_router
+from api.user import router as user_router
+from api.onboarding import router as onboarding_router
+from api.projects import router as projects_router
+from api.repositories import router as repositories_router
+from api.memory import router as memory_router
+from api.webhooks import router as webhooks_router
+from api.github import router as github_router, github_installation_setup_callback
+from api.events import router as events_router
+from api.meetings import router as meetings_router
+from api.query import router as query_router
+from api.identity import router as identity_router
+from api.work_items import router as work_items_router
 
 app = FastAPI(
     title="Tzylo — Engineering Memory Assistant API",
@@ -83,7 +86,6 @@ async def custom_http_exception_handler(request: Request, exc: HTTPException):
 
 # 3. Include Routers
 app.include_router(meetings_router)
-app.include_router(meetings_v1_router)
 app.include_router(query_router)
 app.include_router(identity_router)
 app.include_router(work_items_router)
@@ -113,6 +115,11 @@ async def startup():
             conn.execute(text("ALTER TABLE meetings ADD COLUMN IF NOT EXISTS meeting_url VARCHAR;"))
             conn.execute(text("ALTER TABLE meetings ADD COLUMN IF NOT EXISTS native_meeting_id VARCHAR;"))
             conn.execute(text("ALTER TABLE meetings ADD COLUMN IF NOT EXISTS vexa_meeting_id VARCHAR;"))
+            conn.execute(text("ALTER TABLE meetings ADD COLUMN IF NOT EXISTS source_type VARCHAR DEFAULT 'pasted';"))
+            conn.execute(text("ALTER TABLE meetings ADD COLUMN IF NOT EXISTS storage_key VARCHAR;"))
+            conn.execute(text("ALTER TABLE meetings ADD COLUMN IF NOT EXISTS transcript_text TEXT;"))
+            conn.execute(text("ALTER TABLE meetings ADD COLUMN IF NOT EXISTS analyzed_at TIMESTAMP;"))
+            conn.execute(text("ALTER TABLE meetings ADD COLUMN IF NOT EXISTS analysis_status VARCHAR DEFAULT 'pending';"))
             conn.commit()
         Base.metadata.create_all(bind=engine)
         print("[DB INIT] Database tables and extensions verified successfully.")

@@ -8,9 +8,9 @@ from sqlalchemy.orm import Mapped, mapped_column, relationship
 from src.db.database import Base
 
 if TYPE_CHECKING:
-    from src.models.github_installation import GithubInstallation
+    from models.github_installation import GithubInstallation
     from models.user import User
-    from src.models.doc_page import DocPage
+    from models.doc_page import DocPage
 
 
 class GithubRepository(Base):

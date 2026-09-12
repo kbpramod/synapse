@@ -13,8 +13,8 @@ if hasattr(sys.stdout, "reconfigure"):
 
 load_dotenv()
 from src.db.database import SessionLocal
-import src.models
-from src.models import (
+import models
+from models import (
     GithubInstallation,
     GithubRepository,
     GithubEvent,

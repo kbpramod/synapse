@@ -6,9 +6,9 @@ from sqlalchemy.orm import Session
 
 from src.api.deps import require_auth
 from src.db.session import get_db
-from src.models.doc_page import DocPage
-from src.models.knowledge_node import KnowledgeNode
-from src.models.repository import Repository
+from models.doc_page import DocPage
+from models.knowledge_node import KnowledgeNode
+from models.repository import Repository
 from models.user import User
 from src.schemas.repository import (
     DocPageResponse,

@@ -8,8 +8,8 @@ from sqlalchemy.orm import Mapped, mapped_column, relationship
 from src.db.database import Base
 
 if TYPE_CHECKING:
-    from src.models.organization_member import OrganizationMember
-    from src.models.github_installation import GithubInstallation
+    from models.organization_member import OrganizationMember
+    from models.github_installation import GithubInstallation
 
 
 class Organization(Base):

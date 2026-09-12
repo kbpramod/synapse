@@ -19,6 +19,11 @@ dependencies = [
     "sqlalchemy>=2.0.51",
     "uvicorn>=0.52.0",
     "alembic>=1.13.0",
+    "langchain>=1.4.0",
+    "langchain-core>=1.6.2",
+    "langchain-openai>=1.6.1",
+    "langgraph>=1.2.11",
+    "python-multipart>=0.0.32",
 ]
 
 

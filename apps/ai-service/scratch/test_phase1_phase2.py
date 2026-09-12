@@ -11,9 +11,9 @@ from src.db.database import engine, Base
 from src.db.session import SessionLocal
 
 # Import models
-from src.models.event_node import EventNode
-from src.models.event_relationship import EventRelationship
-from src.models.knowledge_node import KnowledgeNode
+from models.event_node import EventNode
+from models.event_relationship import EventRelationship
+from models.knowledge_node import KnowledgeNode
 
 from src.schemas.event import MeetingIngestRequest, TranscriptSegment, EventCreate
 from src.services.event_service import event_service

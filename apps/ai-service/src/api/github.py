@@ -8,10 +8,10 @@ from sqlalchemy.orm import Session
 
 from src.api.deps import require_auth
 from src.db.session import get_db
-from src.models.github_install_state import GithubInstallState
-from src.models.github_installation import GithubInstallation
-from src.models.organization_member import OrganizationMember
-from src.models.repository import Repository, GithubRepository
+from models.github_install_state import GithubInstallState
+from models.github_installation import GithubInstallation
+from models.organization_member import OrganizationMember
+from models.repository import Repository, GithubRepository
 from models.user import User
 from src.services.github_service import (
     fetch_installation_repositories,

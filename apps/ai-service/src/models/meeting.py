@@ -8,6 +8,7 @@ from src.db.database import Base
 
 class Meeting(Base):
     __tablename__ = "meetings"
+    __table_args__ = {'extend_existing': True}
 
     id = Column(String, primary_key=True, default=lambda: str(uuid4()))
     external_meeting_id = Column(String, index=True, nullable=True)
@@ -22,6 +23,13 @@ class Meeting(Base):
     meeting_url = Column(String, nullable=True)
     native_meeting_id = Column(String, index=True, nullable=True)
     vexa_meeting_id = Column(String, index=True, nullable=True)
+
+    # Transcript Ingestion / Storage / Analysis fields
+    source_type = Column(String, nullable=True, default="pasted")  # "file" | "pasted"
+    storage_key = Column(String, nullable=True)
+    transcript_text = Column(Text, nullable=True)
+    analyzed_at = Column(DateTime, nullable=True)
+    analysis_status = Column(String, nullable=False, default="pending", index=True)  # pending, processing, completed, failed
     
     started_at = Column(DateTime, nullable=True)
     ended_at = Column(DateTime, nullable=True)
@@ -42,3 +50,6 @@ class Meeting(Base):
 
     # Relationships
     facts = relationship("Fact", foreign_keys="Fact.source_id", primaryjoin="and_(Meeting.id==Fact.source_id, Fact.source_type=='meeting')", backref="meeting", lazy="dynamic")
+    decisions = relationship("Decision", back_populates="meeting", cascade="all, delete-orphan")
+    tasks = relationship("Task", back_populates="meeting", cascade="all, delete-orphan")
+    knowledge_items = relationship("Knowledge", back_populates="meeting", cascade="all, delete-orphan")

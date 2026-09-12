@@ -13,6 +13,7 @@ from src.transcription.exceptions import (
 from src.transcription.utils import parse_google_meet_url
 from src.transcription.vexa.client import VexaClient
 from src.transcription.vexa.provider import VexaTranscriptProvider
+from src.transcription.vexa.live import VexaLiveClient
 from src.transcription.factory import get_transcript_provider
 
 __all__ = [
@@ -31,5 +32,6 @@ __all__ = [
     "parse_google_meet_url",
     "VexaClient",
     "VexaTranscriptProvider",
+    "VexaLiveClient",
     "get_transcript_provider"
 ]

@@ -1,7 +1,7 @@
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from src.models.knowledge_node import KnowledgeNode
+from models.knowledge_node import KnowledgeNode
 
 
 class KnowledgeRepository:
