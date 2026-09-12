@@ -1,4 +1,5 @@
 import os
+import logging
 import jwt
 from fastapi import Depends, HTTPException, Request, status
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
@@ -7,10 +8,15 @@ from sqlalchemy.orm import Session
 try:
     from src.db.session import get_db
     from models.user import User
+    from models.organization import Organization
+    from models.organization_member import OrganizationMember
 except ImportError:
     from db.session import get_db
     from models.user import User
+    from models.organization import Organization
+    from models.organization_member import OrganizationMember
 
+logger = logging.getLogger(__name__)
 security = HTTPBearer(auto_error=False)
 
 
@@ -66,7 +72,7 @@ async def get_current_user(
 ) -> User:
     """
     FastAPI dependency to extract Clerk token, verify authentication,
-    and return/create local User entity.
+    ensure and enforce active organization membership, and auto-provision records.
     """
     token = None
 
@@ -117,10 +123,85 @@ async def get_current_user(
             db.refresh(user)
         except Exception:
             db.rollback()
-            # If concurrent request provisioned user, fetch existing
             user = db.query(User).filter(User.clerk_user_id == clerk_user_id).first()
             if not user:
                 raise
+
+    # 5. Extract and Enforce Active Organization (Required for all members)
+    clerk_org_id = (
+        payload.get("org_id")
+        or request.headers.get("x-organization-id")
+        or request.headers.get("x-clerk-org-id")
+    )
+
+    # Fallback to existing membership in DB if token claim isn't present
+    if not clerk_org_id:
+        existing_membership = db.query(OrganizationMember).filter(
+            OrganizationMember.user_id == user.id
+        ).first()
+        if existing_membership:
+            clerk_org_id = existing_membership.organization_id
+
+    # Strictly require organization
+    if not clerk_org_id:
+        logger.warning(f"[AUTH] User '{clerk_user_id}' attempted request without active organization.")
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Organization is required for all members. Please select or join an active organization.",
+            headers={"WWW-Authenticate": "Bearer"},
+        )
+
+    # 6. Auto-provision Organization if not already in DB
+    org = db.query(Organization).filter(Organization.id == clerk_org_id).first()
+    if not org:
+        org_name = (
+            payload.get("org_name")
+            or payload.get("org_slug")
+            or request.headers.get("x-organization-name")
+            or f"Organization {clerk_org_id}"
+        )
+        org = Organization(
+            id=clerk_org_id,
+            name=org_name
+        )
+        db.add(org)
+        try:
+            db.commit()
+            db.refresh(org)
+        except Exception:
+            db.rollback()
+            org = db.query(Organization).filter(Organization.id == clerk_org_id).first()
+
+    # 7. Auto-provision / Ensure OrganizationMember relationship
+    membership = db.query(OrganizationMember).filter(
+        OrganizationMember.organization_id == clerk_org_id,
+        OrganizationMember.user_id == user.id
+    ).first()
+
+    raw_role = payload.get("org_role", "member")
+    role = raw_role.split(":", 1)[1] if ":" in str(raw_role) else str(raw_role)
+
+    if not membership:
+        membership = OrganizationMember(
+            organization_id=clerk_org_id,
+            user_id=user.id,
+            role=role or "member"
+        )
+        db.add(membership)
+        try:
+            db.commit()
+            db.refresh(membership)
+        except Exception:
+            db.rollback()
+            membership = db.query(OrganizationMember).filter(
+                OrganizationMember.organization_id == clerk_org_id,
+                OrganizationMember.user_id == user.id
+            ).first()
+
+    # Attach organization context directly onto user instance
+    user.organization_id = clerk_org_id
+    user.current_organization = org
+    user.organization_role = getattr(membership, "role", "member")
 
     return user
 
@@ -140,37 +221,36 @@ async def get_optional_user(
         return None
 
     try:
-        payload = decode_clerk_token(token)
-        clerk_user_id = payload.get("sub")
-        if not clerk_user_id:
+        return await get_current_user(request=request, auth_credentials=auth_credentials, db=db)
+    except HTTPException:
+        # For optional auth endpoints, invalid/missing org falls back gracefully
+        try:
+            payload = decode_clerk_token(token)
+            clerk_user_id = payload.get("sub")
+            if not clerk_user_id:
+                return None
+            return db.query(User).filter(User.clerk_user_id == clerk_user_id).first()
+        except Exception:
             return None
 
-        user = db.query(User).filter(User.clerk_user_id == clerk_user_id).first()
-        if not user:
-            name = payload.get("name")
-            if not name:
-                fname = payload.get("first_name", "") or ""
-                lname = payload.get("last_name", "") or ""
-                name = f"{fname} {lname}".strip() or None
 
-            user = User(
-                clerk_user_id=clerk_user_id,
-                email=payload.get("email") or payload.get("primary_email_address"),
-                name=name
-            )
-            db.add(user)
-            try:
-                db.commit()
-                db.refresh(user)
-            except Exception:
-                db.rollback()
-                user = db.query(User).filter(User.clerk_user_id == clerk_user_id).first()
-
-        return user
-    except Exception:
-        return None
+async def get_current_organization(
+    user: User = Depends(get_current_user),
+    db: Session = Depends(get_db)
+) -> Organization:
+    """Dependency that returns the verified active Organization for the authenticated user."""
+    org = getattr(user, "current_organization", None)
+    if not org and getattr(user, "organization_id", None):
+        org = db.query(Organization).filter(Organization.id == user.organization_id).first()
+    if not org:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Active organization not found."
+        )
+    return org
 
 
 # Dependency aliases
 require_auth = get_current_user
 optional_auth = get_optional_user
+require_org = get_current_organization

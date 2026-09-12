@@ -62,3 +62,15 @@ class User(Base):
         cascade="all, delete-orphan"
     )
 
+    @property
+    def organization_id(self) -> str | None:
+        if hasattr(self, "_active_organization_id") and self._active_organization_id:
+            return self._active_organization_id
+        if self.organization_memberships:
+            return self.organization_memberships[0].organization_id
+        return None
+
+    @organization_id.setter
+    def organization_id(self, value: str | None) -> None:
+        self._active_organization_id = value
+

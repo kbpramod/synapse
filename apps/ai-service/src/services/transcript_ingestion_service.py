@@ -93,7 +93,7 @@ class TranscriptIngestionService:
             transcript_text=cleaned_text,
             transcript_raw=cleaned_text,
             organization_id=org_id,
-            status="active",
+            status="completed",
             analysis_status="processing",
             created_at=datetime.utcnow(),
             updated_at=datetime.utcnow()
@@ -154,7 +154,7 @@ class TranscriptIngestionService:
             transcript_text=cleaned_text,
             transcript_raw=cleaned_text,
             organization_id=org_id,
-            status="active",
+            status="completed",
             analysis_status="processing",
             created_at=datetime.utcnow(),
             updated_at=datetime.utcnow()
