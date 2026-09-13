@@ -102,3 +102,26 @@ $env:HEADLESS="false"; uv run python storage/wecatchai.com/tests/test_page_smoke
 # Or execute with pytest
 uv run pytest storage/wecatchai.com/tests/test_page_smoke.py
 ```
+
+---
+
+## Database Persistence & Tables
+
+When the Test Builder node generates test scripts, they are persisted both to disk and indexed directly into the database:
+
+1. **`forge.tests`** (Primary Test Repository):
+   - **`test_id`**: Globally unique test identifier (e.g. `ws13_smoke_navigation_home`).
+   - **`website_id`**: Associated website ID from `forge.websites`.
+   - **`domain`** & **`page_url`**: Target site domain and target page URL.
+   - **`title`**, **`description`**, **`category`**, **`priority`**: Human-readable metadata and scheduling priority.
+   - **`script_path`**: Absolute path on disk to the generated `.py` script.
+   - **`test_code`**: Complete source code of the Python test script.
+   - **`language`**: Script runtime language (`python` or `typescript`).
+   - **`cron_expression`**, **`cron_interval_hours`**, **`schedule_offset_seconds`**, **`next_run_at`**: Recurrence cadence and distributed target timestamps computed via `scheduler.spacing.compute_next_run`.
+
+2. **`forge.test_runs`** (Execution Results):
+   - Stores runtime results per execution (`run_id`, `test_id`, `status` [PASSED/FAILED], `exit_code`, `duration_s`, `stdout`, `stderr`, `screenshot_paths`, `trace_path`, `executed_at`).
+
+3. **`forge.heals`** (Self-Healing Audit Trail):
+   - Records any automated script fixes applied by the Self-Healing agent (`test_id`, `run_id`, `attempt`, `error_snippet`, `diagnosis`, `fix_plan`, `healed_at`).
+

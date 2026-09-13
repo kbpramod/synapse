@@ -5,6 +5,7 @@ Prevents execution spikes at exact cron boundaries by spreading target execution
 timestamps across the recurrence window.
 """
 from datetime import datetime, timezone, timedelta
+from typing import Any, Dict, List, Optional
 import zoneinfo
 try:
     from croniter import croniter
