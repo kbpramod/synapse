@@ -84,19 +84,35 @@ def apply_search_replace_blocks(original_code: str, response_text: str) -> Optio
     if "<<<<<<< SEARCH" not in response_text or ">>>>>>>" not in response_text:
         return None
 
-    modified_code = original_code
-    parts = response_text.split("<<<<<<< SEARCH")
+    # Normalize line endings
+    norm_original = original_code.replace("\r\n", "\n")
+    norm_response = response_text.replace("\r\n", "\n")
+
+    modified_code = norm_original
+    parts = norm_response.split("<<<<<<< SEARCH")
     for part in parts[1:]:
         if "=======" not in part or ">>>>>>>" not in part:
             continue
-        search_block = part.split("=======")[0].strip("\r\n")
+        search_block = part.split("=======")[0].strip("\n")
         replace_part = part.split("=======")[1]
-        replace_block = replace_part.split(">>>>>>>")[0].strip("\r\n")
+        replace_block = replace_part.split(">>>>>>>")[0].strip("\n")
 
         if search_block in modified_code:
             modified_code = modified_code.replace(search_block, replace_block, 1)
         else:
-            return None
+            # Try line-by-line whitespace-tolerant match
+            search_lines = [l.rstrip() for l in search_block.split("\n")]
+            code_lines = [l.rstrip() for l in modified_code.split("\n")]
+            matched = False
+            for idx in range(len(code_lines) - len(search_lines) + 1):
+                if code_lines[idx:idx + len(search_lines)] == search_lines:
+                    orig_lines = modified_code.split("\n")
+                    new_code_lines = orig_lines[:idx] + [replace_block] + orig_lines[idx + len(search_lines):]
+                    modified_code = "\n".join(new_code_lines)
+                    matched = True
+                    break
+            if not matched:
+                return None
 
     return modified_code
 
@@ -261,6 +277,9 @@ def editor_node(state: ForgeState) -> Dict[str, Any]:
         "discovered_elements": elements_sample,
     }
 
+    edit_status = "not_attempted"
+    edit_failure_reason = None
+
     try:
         llm = get_chat_model()
         messages = [
@@ -281,17 +300,23 @@ def editor_node(state: ForgeState) -> Dict[str, Any]:
         if patched:
             edited_code = patched
         else:
-            edited_code = clean_code(response_text)
+            cleaned = clean_code(response_text)
+            if "def test_" in cleaned or "sync_playwright" in cleaned:
+                edited_code = cleaned
+            else:
+                edit_failure_reason = "No SEARCH/REPLACE block or valid full test script found in LLM response"
+                edited_code = existing_code
 
-        if test_path.suffix == ".py":
+        if test_path.suffix == ".py" and not edit_failure_reason:
             edited_code = apply_lint(edited_code, f"editor/{test_path.name}")
 
     except Exception as e:
         logger.error(f"[EDITOR] LLM edit failed: {e}. Keeping original code.", exc_info=True)
+        edit_failure_reason = str(e)
         edited_code = existing_code
 
     # Validate with Python AST parsing before saving to prevent corrupting test scripts
-    if test_path.suffix == ".py":
+    if test_path.suffix == ".py" and not edit_failure_reason:
         try:
             ast.parse(edited_code)
             logger.info(f"[EDITOR] AST validation passed for {test_path.name}.")
@@ -300,16 +325,23 @@ def editor_node(state: ForgeState) -> Dict[str, Any]:
                 f"[EDITOR] AST validation failed: Edited code contains SyntaxError ({syntax_err}). "
                 f"Rejecting invalid modification and preserving existing working code."
             )
+            edit_failure_reason = f"SyntaxError: {syntax_err}"
             edited_code = existing_code
 
-    # A heal that changes nothing will fail identically on the next run, burning the whole
-    # heal budget in silence. Make that loud rather than letting the loop spin.
-    edit_applied = edited_code.strip() != existing_code.strip()
-    if not edit_applied:
+    if edit_failure_reason:
+        edit_status = "failed"
+    elif edited_code.strip() != existing_code.strip():
+        edit_status = "applied"
+    else:
+        edit_status = "no_change"
+
+    edit_applied = (edit_status == "applied")
+
+    logger.info(f"[EDITOR] Edit status for {test_path.name}: {edit_status} (applied={edit_applied})")
+    if edit_status in ("no_change", "failed"):
         logger.warning(
-            f"[EDITOR] NO CHANGE APPLIED to {test_path.name} (heal_attempt={heal_attempt}). "
-            f"The script is byte-identical, so re-running it will fail exactly the same way. "
-            f"This usually means the edit call itself failed above — fix that rather than retrying."
+            f"[EDITOR] NO ACTIONABLE EDIT APPLIED to {test_path.name} (status={edit_status}, reason={edit_failure_reason}). "
+            f"The script is byte-identical or invalid. Circuit breaker will halt futile re-runs."
         )
 
     # Archive the script's lineage for this run. Healing overwrites in place, so without this
@@ -383,5 +415,6 @@ def editor_node(state: ForgeState) -> Dict[str, Any]:
     return {
         "test_code": edited_code,
         "test_file_path": str(test_path),
+        "edit_status": edit_status,
         "edit_applied": edit_applied,
     }

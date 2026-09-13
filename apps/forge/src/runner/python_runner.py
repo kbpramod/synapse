@@ -10,7 +10,13 @@ from config import is_headless, DEFAULT_TEST_TIMEOUT_S
 
 _FINAL_URL_RE = re.compile(r"\[FINAL_URL\]\s*(\S+)")
 _FAILURE_URL_RE = re.compile(r"\[FAILURE_URL\]\s*(\S+)")
-_VISIBLE_ERRORS_RE = re.compile(r"\[VISIBLE_ERRORS\]\s*(\[.*?\])")
+_VISIBLE_ERRORS_RE = re.compile(r"\[VISIBLE_ERRORS\]\s*(\[.*\])")
+_ERROR_ELEMENTS_RE = re.compile(r"\[ERROR_ELEMENTS\]\s*(\[.*\])")
+
+_FALSE_POSITIVE_ERROR_RE = re.compile(
+    r"\b(success|successfully|subscribed|contact us|get in touch|feedback for us|subscription|automationexercise)\b",
+    re.I,
+)
 
 
 def _parse_telemetry(stdout: str, stderr: str) -> Dict[str, Any]:
@@ -18,13 +24,26 @@ def _parse_telemetry(stdout: str, stderr: str) -> Dict[str, Any]:
     final_url_match = _FINAL_URL_RE.search(combined)
     failure_url_match = _FAILURE_URL_RE.search(combined)
     visible_errors_match = _VISIBLE_ERRORS_RE.search(combined)
+    error_elements_match = _ERROR_ELEMENTS_RE.search(combined)
 
     visible_errors: List[str] = []
     if visible_errors_match:
         try:
             parsed = json.loads(visible_errors_match.group(1))
             if isinstance(parsed, list):
-                visible_errors = [str(x).strip() for x in parsed if x]
+                visible_errors = [
+                    str(x).strip() for x in parsed
+                    if x and not _FALSE_POSITIVE_ERROR_RE.search(str(x).strip())
+                ]
+        except Exception:
+            pass
+
+    error_elements: List[str] = []
+    if error_elements_match:
+        try:
+            parsed_el = json.loads(error_elements_match.group(1))
+            if isinstance(parsed_el, list):
+                error_elements = [str(x).strip() for x in parsed_el if x]
         except Exception:
             pass
 
@@ -32,6 +51,7 @@ def _parse_telemetry(stdout: str, stderr: str) -> Dict[str, Any]:
         "final_url": final_url_match.group(1).strip() if final_url_match else None,
         "failure_url": failure_url_match.group(1).strip() if failure_url_match else None,
         "visible_errors": visible_errors,
+        "error_elements": error_elements,
     }
 
 
@@ -43,68 +63,53 @@ def run_test_script(
     headed: Optional[bool] = None,
 ) -> Dict[str, Any]:
     """Executes a Python Playwright test script in an isolated subprocess."""
-    test_path = Path(test_file_path).resolve()
+    test_path = Path(test_file_path)
     if not test_path.exists():
-        return {
-            "exit_code": 1,
-            "passed": False,
-            "stdout": "",
-            "stderr": f"Test script file not found: {test_path}",
-            "duration_s": 0.0,
-            "error_summary": "Test file not found",
-            "trace_path": None,
-            "screenshot_paths": [],
-            "final_url": None,
-            "failure_url": None,
-            "visible_errors": [],
-        }
+        raise FileNotFoundError(f"Test script not found: {test_file_path}")
 
-    working_dir = cwd or str(test_path.parent)
-    if headed is None and env_vars and "HEADLESS" in env_vars:
-        headed = env_vars["HEADLESS"].lower() not in ("true", "1", "yes")
-
-    run_headless = is_headless(override=None if headed is None else not headed)
-
-    run_env = os.environ.copy()
-    run_env["PYTHONUNBUFFERED"] = "1"
-    run_env["HEADLESS"] = "true" if run_headless else "false"
+    env = os.environ.copy()
     if env_vars:
-        run_env.update(env_vars)
+        env.update(env_vars)
+
+    if headed is not None:
+        env["HEADLESS"] = "false" if headed else "true"
+
+    cmd = [sys.executable, str(test_path.resolve())]
 
     start_time = time.time()
     try:
-        process = subprocess.run(
-            [sys.executable, str(test_path)],
-            cwd=working_dir,
-            env=run_env,
+        proc = subprocess.run(
+            cmd,
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
             text=True,
             timeout=timeout_s,
+            cwd=cwd or str(test_path.parent),
+            env=env,
         )
         duration = time.time() - start_time
-        exit_code = process.returncode
-        stdout = process.stdout or ""
-        stderr = process.stderr or ""
-        passed = (exit_code == 0)
+        stdout = proc.stdout
+        stderr = proc.stderr
+        passed = proc.returncode == 0
 
-        # Parse error summary from output for self-healing and analysis
+        # Artifacts produced next to test file
+        test_stem = test_path.stem
+        parent_dir = test_path.parent
+        screenshots = [str(p.resolve()) for p in parent_dir.glob(f"{test_stem}*.png")]
+        trace_path = None
+        traces = list(parent_dir.glob(f"{test_stem}*.zip"))
+        if traces:
+            trace_path = str(traces[0].resolve())
+
         error_summary = None
         if not passed:
-            lines = [l.strip() for l in (stderr or stdout).splitlines() if l.strip()]
-            error_lines = [
-                l for l in lines
-                if any(k in l.lower() for k in ("error:", "exception:", "assertionerror", "failed", "timeout", "timed out"))
-            ]
-            error_summary = error_lines[-1] if error_lines else (lines[-1] if lines else "Execution failed")
+            lines = [line.strip() for line in stderr.splitlines() if line.strip()]
+            error_summary = lines[-1] if lines else f"Process exited with code {proc.returncode}"
 
-        screenshots: List[str] = [str(img) for img in Path(working_dir).glob("**/*.png")]
-        traces = list(Path(working_dir).glob("**/*.zip"))
-        trace_path = str(traces[0]) if traces else None
         telemetry = _parse_telemetry(stdout, stderr)
 
         return {
-            "exit_code": exit_code,
+            "exit_code": proc.returncode,
             "passed": passed,
             "stdout": stdout,
             "stderr": stderr,
@@ -115,6 +120,7 @@ def run_test_script(
             "final_url": telemetry["final_url"],
             "failure_url": telemetry["failure_url"],
             "visible_errors": telemetry["visible_errors"],
+            "error_elements": telemetry["error_elements"],
         }
     except subprocess.TimeoutExpired as e:
         duration = time.time() - start_time
@@ -133,6 +139,7 @@ def run_test_script(
             "final_url": telemetry["final_url"],
             "failure_url": telemetry["failure_url"],
             "visible_errors": telemetry["visible_errors"],
+            "error_elements": telemetry["error_elements"],
         }
     except Exception as e:
         return {
@@ -147,6 +154,7 @@ def run_test_script(
             "final_url": None,
             "failure_url": None,
             "visible_errors": [],
+            "error_elements": [],
         }
 
 

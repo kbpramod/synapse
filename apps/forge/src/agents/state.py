@@ -36,6 +36,9 @@ class ExecutionResult(TypedDict, total=False):
     error_summary: Optional[str]
     trace_path: Optional[str]
     screenshot_paths: List[str]
+    failure_url: Optional[str]
+    visible_errors: Optional[List[str]]
+    error_elements: Optional[List[str]]
 
 
 class AnalysisResult(TypedDict, total=False):
@@ -55,15 +58,30 @@ class HealEvent(TypedDict, total=False):
     preserve: str
 
 
+class NavigationInfo(TypedDict, total=False):
+    expected: bool
+    auth_redirect: bool
+    target_url: str
+    failure_url: str
+
+
 class FailureContext(TypedDict, total=False):
+    target_url: str
+    failure_url: str
+    discovery_url: str
+    navigation: NavigationInfo
+    page_loaded: bool
     expected: str
     actual: str
     failed_step: str
     error: Optional[str]
+    error_summary: Optional[str]
     screenshot: Optional[str]
     trace: Optional[str]
     console_errors: List[str]
     network_errors: List[str]
+    visible_errors: List[str]
+    error_elements: List[str]
 
 
 class VerificationState(TypedDict, total=False):
@@ -112,6 +130,7 @@ class ForgeState(TypedDict, total=False):
     run_id: Optional[str]  # stable id for one execution cycle; keys archived script revisions
     test_code: Optional[str]
     test_file_path: Optional[str]
+    edit_status: Optional[str]  # "not_attempted" | "applied" | "no_change" | "failed"
     edit_applied: Optional[bool]  # False when a heal produced byte-identical code
     execution_result: Optional[ExecutionResult]
 

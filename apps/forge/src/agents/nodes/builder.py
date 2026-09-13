@@ -49,11 +49,13 @@ Requirements for the generated Playwright Python test:
            except Exception as exc:
                try:
                    print(f"[FAILURE_URL] {page.url}")
-                   error_texts = page.locator(".error, .alert, [role='alert'], [data-test='error'], h1, h2, h3").all_inner_texts()
-                   clean_errors = [t.strip() for t in error_texts if t.strip()]
+                   err_sel = "[role='alert'], .alert-danger, .alert-warning, .error-message, .error-msg, .error:not(input):not(form), .invalid-feedback, [data-test='error'], [data-testid='error']"
+                   raw_errors = [t.strip() for t in page.locator(err_sel).all_inner_texts() if t.strip()]
+                   clean_errors = [t for t in raw_errors if not re.search(r"\\b(success|successfully|subscribed)\\b", t, re.I)]
                    if clean_errors:
                        import json
                        print(f"[VISIBLE_ERRORS] {json.dumps(clean_errors[:5])}")
+                       print(f"[ERROR_ELEMENTS] {json.dumps([err_sel][:5])}")
                    page.screenshot(path=os.path.splitext(os.path.abspath(__file__))[0] + "_failure.png")
                except Exception:
                    pass
@@ -433,10 +435,12 @@ def test_{test_id_clean}():
         except Exception as exc:
             try:
                 print(f"[FAILURE_URL] {{page.url}}")
-                error_texts = page.locator(".error, .alert, [role='alert'], [data-test='error'], h1, h2, h3").all_inner_texts()
-                clean_errors = [t.strip() for t in error_texts if t.strip()]
+                err_sel = "[role='alert'], .alert-danger, .alert-warning, .error-message, .error-msg, .error:not(input):not(form), .invalid-feedback, [data-test='error'], [data-testid='error']"
+                raw_errors = [t.strip() for t in page.locator(err_sel).all_inner_texts() if t.strip()]
+                clean_errors = [t for t in raw_errors if not re.search(r"\\b(success|successfully|subscribed)\\b", t, re.I)]
                 if clean_errors:
                     print(f"[VISIBLE_ERRORS] {{json.dumps(clean_errors[:5])}}")
+                    print(f"[ERROR_ELEMENTS] {{json.dumps([err_sel][:5])}}")
                 page.screenshot(path=os.path.splitext(os.path.abspath(__file__))[0] + "_failure.png")
             except Exception:
                 pass

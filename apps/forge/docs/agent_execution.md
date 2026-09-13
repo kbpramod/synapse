@@ -57,54 +57,60 @@ uv run test-scripts/agent_loop.py https://wecatchai.com/ --headless true --timeo
 
 ### 1. Failure Telemetry & Diagnostics
 Generated test scripts are equipped with inline exception handlers that capture real-time application context at the exact moment of failure:
-- **`[FAILURE_URL]`**: The actual URL the browser is on when an exception or assertion occurs. Crucial for detecting silent HTTP redirects (e.g. redirecting from `/inventory.html` or `/dashboard` to `/` or `/login`).
-- **`[VISIBLE_ERRORS]`**: Error banners, toasts, and alert headings (`.error`, `.alert`, `[role='alert']`, `[data-test='error']`, `h1-h3`) visible on the failure page (e.g. *"Epic sadface: You can only access '/inventory.html' when you are logged in"*).
+- **`[FAILURE_URL]`**: The actual URL the browser is on when an exception or assertion occurs. Crucial for detecting navigation destinations vs unexpected HTTP redirects (e.g. redirecting from protected routes to `/login`).
+- **`[VISIBLE_ERRORS]`**: Explicitly targets true error containers (`[role='alert']`, `.alert-danger`, `.alert-warning`, `.error-message`, `.error`, `.invalid-feedback`, `[data-test='error']`). Normal page headings (`h1-h3`) and success notifications (`.alert-success`) are strictly excluded to avoid contaminating the diagnostic evidence pipeline.
+- **`[ERROR_ELEMENTS]`**: Captures the exact CSS selector producing the error text.
 - **Failure Screenshot**: Captured to `<test_name>_failure.png` before context termination.
 - **`[FINAL_URL]`**: Emitted upon journey success to automatically trigger background onboarding for newly reached authenticated pages.
 
-### 2. Defect Analysis (`analyzer`)
-The Defect Analyzer classifies execution outcomes into three distinct categories:
+### 2. Single Source of Truth (`failure_context`) & Defect Analysis
+To prevent downstream agents from independently re-interpreting raw telemetry, the `analyzer` normalizes failure evidence into a unified `FailureContext`:
+```python
+failure_context = {
+    "target_url": "https://example.com/",
+    "failure_url": "https://example.com/contact_us",
+    "discovery_url": "https://example.com/contact_us",
+    "navigation": {
+        "expected": True,
+        "auth_redirect": False,
+    },
+    "page_loaded": True,
+    "visible_errors": [],
+    "error_elements": [],
+    "error_summary": "...",
+}
+```
+
+The Analyzer classifies execution outcomes into three distinct categories:
 - **`PASS`**: All functional state transitions and assertions succeeded.
-- **`NEED_HEAL` (Test Automation Defect)**: The application is behaving normally, but the automation failed:
-  - **Authentication Redirect**: The test navigated directly to a protected route without logging in or without loading session credentials.
+- **`NEED_HEAL` (Test Automation Defect)**: The application is functioning normally, but the automation failed:
+  - **Navigation vs Auth Disambiguation**: Forward journey navigation (e.g. `/` -> `/contact_us` or `/products`) is classified as expected application progression (`auth_redirect: False`). An authentication defect is diagnosed *only* when the application redirected to an unexpected authentication barrier (e.g. `/login` or `/users/sign_in`) or displayed an explicit authentication error banner.
   - **Locator / Responsive Variant**: The element is hidden inside a collapsed drawer, mobile menu, or changed selector.
   - **Timing & Waiting**: Dynamic DOM render timing or race conditions.
-- **`SUSPECTED_APP_FAILURE` (Application Bug)**: True application defects (HTTP 500/502/503 errors, unhandled JavaScript exceptions, or broken application business logic).
+- **`SUSPECTED_APP_FAILURE` (Application Bug)**: Severe backend errors (HTTP 500/502/503), unhandled application JavaScript crashes, or maximum heal budget reached.
 
-### 3. Self-Healing & Session State Reuse (`healer` -> `editor`)
-When a test fails due to an authentication redirect or missing credentials:
-1. **Healer Diagnosis**: Combines `failure_url`, `redirect_detected`, `visible_errors_on_page`, and registered `available_accounts`.
-2. **Session Identification**: Automatically detects existing `*.storage_state.json` session files in `storage/<domain>/tests/`.
-3. **Tactical Fix Plan**: Formulates precise instructions for the `editor` node to either:
-   - Load the existing `storage_state` in `browser.new_context(storage_state=...)`.
-   - Prepend login steps utilizing registered user credentials before navigating to protected routes.
-4. **Editor Execution**: The Editor patches the script in place, preserving existing journey steps while resolving the prerequisite defect.
+### 3. Destination-Scoped Discovery & Self-Healing Pipeline
+The Cron Graph executes discovery *before* diagnosis to ensure the Healer operates on ground-truth destination DOM evidence:
+```text
+runner -> observer -> analyzer -> discover_for_heal -> healer -> editor -> route_editor
+```
+1. **Destination Scoping**: Discovery targets `discovery_url` (`failure_url` if valid HTTP/HTTPS, else `target_url`). If a test navigated from `/` and failed on `/contact_us`, discovery inspects `/contact_us`, capturing its live headings, inputs, and buttons.
+2. **Healer Diagnosis**: Inspects the destination DOM elements and headings. If the test failed asserting `h1: "Contact Us"`, the Healer observes destination headings (`h2: "GET IN TOUCH"`, `h2: "FEEDBACK FOR US"`) and plans a grounded locator fix rather than hallucinating an authentication issue.
+3. **Editor Circuit Breaker (`edit_status`)**:
+   Tracks explicit modification status (`applied`, `no_change`, `failed`):
+   - `applied`: Script successfully updated and validated via AST parsing -> routes to `runner` for re-execution.
+   - `no_change` / `failed`: Circuit breaker halts retries immediately, records the failure in PostgreSQL, advances the schedule, and routes to `get_next_test`. Wasted retries on identical code are eliminated.
 
-### 4. Transparent Healer & Discovery Diagnostics
-To eliminate "black box" behavior when tests fail or elements seem missing, the Healer emits structured, traceable logs:
-- **`[HEAL:DISCOVERY]`**: Discloses the discovery snapshot source (`state`, disk cache `discovery.json`, or PostgreSQL), snapshot URL vs target URL, and raw element counts. Highlights any URL mismatch (e.g. if discovery was redirected to login).
-- **`[HEAL:LOCATOR_MATCH]`**: Explicitly cross-checks the failed locator or text from `error_summary` / `stderr` against raw discovery buttons, inputs, and links to report whether the element was ever observed on that page.
-- **`[HEAL:ELEMENTS_FEED]` & `[HEAL:ELEMENTS_FEED:OMITTED]`**: Details the exact number of buttons, inputs, links, and selects passed into the LLM prompt, prioritizes the targeted selector, and logs what elements were omitted to protect prompt context limits.
-- **`[HEAL:TELEMETRY]`**: Summarizes target URL, failure landing URL, redirect flags, on-screen error banners, available `storage_state`, and registered accounts.
-- **`[HEAL:LLM_RESULT]`**: Displays the final Failure Class, Root-Cause Diagnosis, Fix Plan, and Preserved test assertions.
+### 4. Evidence-Based Deterministic Verifier
+When max heals are exceeded or an unresolvable defect occurs, the Verifier classifies evidence deterministically without spawning fragile secondary LLM smoke tests:
+- **`CONFIRMED_APP_BUG`**: Server returned 5xx, connection refused, or unhandled crash -> Incident report filed.
+- **`FAILED_AUTOMATION`**: Auth barrier reached, or destination DOM loaded with existing page headings/buttons -> Script/assertion defect.
+- **`INCONCLUSIVE`**: Ambiguous evidence -> Terminated cleanly, recorded in PostgreSQL, schedule advanced, advances to `get_next_test`. Under no circumstances does an inconclusive verdict re-loop or spin up secondary broken probes.
 
-### 5. Architectural Invariant: DOM Locators Are Immutable Technical Evidence
-Locators discovered from the live DOM by the Discovery Agent represent immutable technical ground truth. Across all agent hand-offs (Discovery → Planner → Builder → Healer → Editor → Runner):
-
-1. **Zero Spelling Normalization**:
-   Agents must NEVER spell-correct, normalize, or semantically rewrite discovered attributes:
-   - *Discovery Agent*: Finds locator `#susbscribe_email`
-   - *Planner / Builder / Healer*: Must preserve `#susbscribe_email` verbatim. Never treat it as a typo or rewrite it to `#subscribe_email`.
-   - *Playwright Runner*: Executes against the real DOM element without timeouts.
-
-2. **Exact Selector Priority Over Guessed Semantic Names**:
-   When an element in the DOM has an ID or unique selector (such as `<button id="subscribe">` containing an arrow icon and no text content), agents must prioritize `page.locator("#subscribe")`. Inventing semantic role selectors like `get_by_role("button", name=re.compile("subscribe"))` fails on icon-only or text-less controls.
-
-3. **Relevance-Ranked DOM Element Feeds**:
-   Instead of naively truncating elements with `[:15]` from the top of the DOM, the Builder, Healer, and Editor rank elements by relevance scoring against scenario keywords, error summaries, and element IDs. This guarantees off-screen or footer form elements (e.g. submit buttons located deep in the DOM) are never truncated or lost from agent context windows.
-
-4. **Idempotent Healing Guard**:
-   When an Editor modification produces byte-identical code (`NO CHANGE APPLIED`), the system flags the lack of diff to avoid burning healing iterations on idempotent failures.
+### 5. Architectural Invariants
+1. **Zero Spelling Normalization**: Locators discovered from the DOM are exact technical evidence. Never spell-correct or normalize discovered attributes (`#susbscribe_email` remains `#susbscribe_email`).
+2. **Exact Selector Priority**: Buttons with unique IDs (`#subscribe`) take precedence over invented semantic role locators.
+3. **Relevance-Ranked DOM Elements**: Elements are scored by keyword and error summary relevance rather than arbitrary top-of-DOM truncation.
 
 
 ---

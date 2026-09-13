@@ -15,9 +15,18 @@ def discover_node(state: ForgeState) -> Dict[str, Any]:
     - Content hierarchy (headings, text preview)
     - Runtime console messages and network errors
     """
-    target_url = state.get("target_url")
+    # Determine discovery target: prioritize failure_url/discovery_url from failure_context
+    f_ctx = state.get("failure_context") or {}
+    exec_res = state.get("execution_result") or {}
+    candidate_url = f_ctx.get("discovery_url") or exec_res.get("failure_url")
+    if candidate_url and isinstance(candidate_url, str) and candidate_url.startswith("http"):
+        target_url = candidate_url
+        logger.info(f"[DISCOVER] Scoped discovery target to failure destination: {target_url}")
+    else:
+        target_url = state.get("target_url")
+
     if not target_url:
-        raise ValueError("Cannot run discover_node without target_url in state.")
+        raise ValueError("Cannot run discover_node without target_url or failure_url in state.")
 
     config = state.get("config", {})
     headless = config.get("headless")
@@ -48,17 +57,38 @@ def discover_node(state: ForgeState) -> Dict[str, Any]:
         is_authenticated=config.get("is_authenticated", False),
     )
 
-    result = discover_page_sync(
-        url=target_url,
-        state_info=default_state,
-        headless=headless,
-        viewport_width=vp_width,
-        viewport_height=vp_height,
-        timeout_ms=timeout_ms,
-        settle_ms=settle_ms,
-        save_to_storage=True,
-        storage_state=config.get("storage_state_path"),
-    )
+    try:
+        result = discover_page_sync(
+            url=target_url,
+            state_info=default_state,
+            headless=headless,
+            viewport_width=vp_width,
+            viewport_height=vp_height,
+            timeout_ms=timeout_ms,
+            settle_ms=settle_ms,
+            save_to_storage=True,
+            storage_state=config.get("storage_state_path"),
+        )
+    except Exception as disc_err:
+        fallback_url = state.get("target_url")
+        if fallback_url and fallback_url != target_url:
+            logger.warning(
+                f"[DISCOVER] Discovery failed on destination '{target_url}' ({disc_err}). "
+                f"Falling back to starting URL '{fallback_url}'."
+            )
+            result = discover_page_sync(
+                url=fallback_url,
+                state_info=default_state,
+                headless=headless,
+                viewport_width=vp_width,
+                viewport_height=vp_height,
+                timeout_ms=timeout_ms,
+                settle_ms=settle_ms,
+                save_to_storage=True,
+                storage_state=config.get("storage_state_path"),
+            )
+        else:
+            raise disc_err
 
     data_dict = result.model_dump()
     vp_summary = data_dict.get("elements", {}).get("viewports_summary") or {}

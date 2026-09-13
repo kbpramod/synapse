@@ -39,13 +39,14 @@ STRICT CONSTRAINTS & RULES:
    b) an authenticated indicator appeared, or
    c) `page.url != start_url`.
 
-5. AUTHENTICATION REDIRECTS & MISSING PREREQUISITES (CRITICAL):
-   When `redirect_detected` is True (e.g. failure_url is the login page while target_url is /inventory or /dashboard)
-   OR when `visible_errors_on_page` contains warnings like "You can only access ... when you are logged in", "Epic sadface", "Sign in":
-   - The root cause is NOT a broken selector or missing button! It is an authentication requirement.
-   - Classify failure_class as "automation_defect".
-   - If `storage_state_available` is provided: instruct the Editor to load `browser.new_context(storage_state=...)`.
-   - If NO storage_state is available: instruct the Editor to use `available_accounts` to perform login steps FIRST before accessing the target route.
+5. AUTHENTICATION REDIRECTS vs EXPECTED JOURNEY NAVIGATION (CRITICAL):
+   - Forward navigation to content pages (e.g. from starting page '/' to '/contact_us', '/products', '/cart') is EXPECTED user journey progression.
+   - Do NOT classify expected forward navigation as an authentication redirect!
+   - ONLY diagnose an authentication requirement when `navigation.auth_redirect` is True (e.g., unexpected redirect to '/login' or '/users/sign_in') OR when visible error banners explicitly demand authentication ('You can only access... when logged in', 'Sign in required').
+   - If an auth redirect is genuinely detected:
+     * Classify failure_class as "automation_defect".
+     * If `storage_state_available` is provided: instruct the Editor to load `browser.new_context(storage_state=...)`.
+     * If NO storage_state is available: instruct the Editor to use `available_accounts` to perform login steps FIRST before accessing the target route.
 
 6. REPAIR OUTPUT FORMAT:
    Structure your repair plan clearly:
@@ -104,33 +105,42 @@ def healer_node(state: ForgeState) -> Dict[str, Any]:
     disc = state.get("discovery_data") or {}
     disc_source = "state.discovery_data" if disc else "missing"
 
+    f_ctx = state.get("failure_context") or {}
+    discovery_target_url = f_ctx.get("discovery_url") or exec_res.get("failure_url") or target_url
+
     # Fallback: check disk cache
     if not disc or not disc.get("elements"):
         try:
             from storage.local import get_discovery_storage_dir, get_page_folder
-            if target_url:
-                disc_file = get_discovery_storage_dir(target_url) / "discovery.json"
+            for lookup_url in (discovery_target_url, target_url):
+                if not lookup_url:
+                    continue
+                disc_file = get_discovery_storage_dir(lookup_url) / "discovery.json"
                 if disc_file.exists():
                     with open(disc_file, "r", encoding="utf-8") as f:
                         disc = json.load(f)
                         disc_source = f"discovery disk cache ({disc_file})"
-                else:
-                    page_file = get_page_folder(target_url) / "index.json"
-                    if page_file.exists():
-                        with open(page_file, "r", encoding="utf-8") as f:
-                            disc = json.load(f)
-                            disc_source = f"page disk cache ({page_file})"
+                        break
+                page_file = get_page_folder(lookup_url) / "index.json"
+                if page_file.exists():
+                    with open(page_file, "r", encoding="utf-8") as f:
+                        disc = json.load(f)
+                        disc_source = f"page disk cache ({page_file})"
+                        break
         except Exception as disk_err:
             logger.debug(f"[HEAL:DISCOVERY] Could not load from disk: {disk_err}")
 
     # Fallback: check PostgreSQL repository
     if not disc or not disc.get("elements"):
         try:
-            if target_url:
-                page_rec = ForgeRepository.get_page_by_url(target_url)
+            for lookup_url in (discovery_target_url, target_url):
+                if not lookup_url:
+                    continue
+                page_rec = ForgeRepository.get_page_by_url(lookup_url)
                 if page_rec and page_rec.get("metadata_json"):
                     disc = page_rec["metadata_json"]
-                    disc_source = "database (forge.pages)"
+                    disc_source = f"database (forge.pages for {lookup_url})"
+                    break
         except Exception as db_err:
             logger.debug(f"[HEAL:DISCOVERY] Could not load from db: {db_err}")
 
@@ -320,13 +330,11 @@ def healer_node(state: ForgeState) -> Dict[str, Any]:
         except Exception:
             pass
 
-    failure_url = exec_res.get("failure_url")
-    redirect_detected = False
-    if failure_url and target_url:
-        clean_fail = failure_url.split("?")[0].rstrip("/")
-        clean_target = target_url.split("?")[0].rstrip("/")
-        if clean_fail != clean_target:
-            redirect_detected = True
+    failure_url = exec_res.get("failure_url") or f_ctx.get("failure_url")
+    discovery_url = f_ctx.get("discovery_url") or failure_url or target_url
+    nav_info = f_ctx.get("navigation") or {}
+    is_auth_redirect = nav_info.get("auth_redirect", False)
+    is_expected_navigation = nav_info.get("expected", True)
 
     visible_errors = exec_res.get("visible_errors", [])
     page_headings = [h.get("text") if isinstance(h, dict) else str(h) for h in raw_headings[:8]]
@@ -358,7 +366,8 @@ def healer_node(state: ForgeState) -> Dict[str, Any]:
         pass
 
     logger.info(
-        f"[HEAL:TELEMETRY] Target URL: '{target_url}' | Failure URL: '{failure_url}' | Redirect Detected: {redirect_detected}"
+        f"[HEAL:TELEMETRY] Target URL: '{target_url}' | Failure URL: '{failure_url}' | "
+        f"Discovery URL: '{discovery_url}' | Auth Redirect: {is_auth_redirect} | Expected Nav: {is_expected_navigation}"
     )
     logger.info(f"[HEAL:TELEMETRY] Visible Errors on Page: {visible_errors}")
     logger.info(f"[HEAL:TELEMETRY] Storage State Available: {storage_state_available or 'None'}")
@@ -373,7 +382,11 @@ def healer_node(state: ForgeState) -> Dict[str, Any]:
         "test_intent": current_test.get("intent") or current_test.get("goal") or current_test.get("description"),
         "target_url": target_url,
         "failure_url": failure_url,
-        "redirect_detected": redirect_detected,
+        "discovery_url": discovery_url,
+        "navigation": {
+            "expected": is_expected_navigation,
+            "auth_redirect": is_auth_redirect,
+        },
         "visible_errors_on_page": visible_errors,
         "page_headings": page_headings,
         "body_text_preview": body_text_preview,
@@ -427,12 +440,12 @@ def healer_node(state: ForgeState) -> Dict[str, Any]:
 
     except Exception as e:
         logger.warning(f"[HEAL:LLM_FALLBACK] LLM call failed ({e}). Using fallback heuristic.")
-        if redirect_detected or any(re.search(r"\b(log\s*in|sign\s*in|authenticated|unauthorized)\b", err, re.I) for err in visible_errors):
-            diagnosis = f"Application redirected to '{failure_url}'. Visible errors: {visible_errors}."
+        if is_auth_redirect:
+            diagnosis = f"Application redirected to auth barrier '{failure_url}'. Visible errors: {visible_errors}."
             fix_plan = f"Initialize session with storage_state: '{storage_state_available}'." if storage_state_available else "Prepend login steps."
             preserve, failure_class = "Keep test assertions.", "automation_defect"
         else:
-            diagnosis, fix_plan, preserve, failure_class = "Timeout failure.", "Add wait_for_load_state('networkidle').", "Keep assertions.", "automation_defect"
+            diagnosis, fix_plan, preserve, failure_class = f"Execution defect on '{discovery_url}': {exec_res.get('error_summary') or 'assertion failure'}.", "Align selectors/assertions with discovered DOM elements.", "Keep assertions.", "automation_defect"
 
         logger.info(f"[HEAL:FALLBACK] Diagnosis: {diagnosis}")
         logger.info(f"[HEAL:FALLBACK] Fix Plan : {fix_plan}")

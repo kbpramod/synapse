@@ -2,10 +2,10 @@ import json
 import logging
 import re
 from pathlib import Path
-from typing import Any, Dict, Optional
-from urllib.parse import urlparse
+from typing import Any, Dict, List, Optional
+from urllib.parse import urlparse, parse_qs
 from agents.llm import get_chat_model
-from agents.state import ForgeState, AnalysisResult
+from agents.state import ForgeState, AnalysisResult, FailureContext, NavigationInfo
 from langchain_core.messages import SystemMessage, HumanMessage
 
 logger = logging.getLogger("forge.agent.analyzer")
@@ -23,6 +23,81 @@ def _extract_final_url(stdout: str) -> Optional[str]:
 def _normalize_url(url: str) -> str:
     parsed = urlparse(url)
     return f"{parsed.scheme}://{parsed.netloc}{parsed.path.rstrip('/')}"
+
+
+def classify_navigation(
+    target_url: str,
+    failure_url: str,
+    current_test: Optional[Dict[str, Any]] = None,
+    visible_errors: Optional[List[str]] = None,
+) -> NavigationInfo:
+    """
+    Classifies navigation telemetry into expected journey progress vs unexpected auth redirects.
+    Distinguishes normal intra-site navigation (/ -> /contact_us) from unexpected auth barriers (/ -> /login).
+    """
+    target = _normalize_url(target_url) if target_url else ""
+    failure = _normalize_url(failure_url) if failure_url else ""
+    current_test = current_test or {}
+    visible_errors = visible_errors or []
+
+    if not failure or not target or failure == target:
+        return NavigationInfo(
+            expected=True,
+            auth_redirect=False,
+            target_url=target_url,
+            failure_url=failure_url or target_url,
+        )
+
+    fail_parsed = urlparse(failure_url)
+    target_parsed = urlparse(target_url)
+
+    fail_path = fail_parsed.path.lower().rstrip("/")
+    target_path = target_parsed.path.lower().rstrip("/")
+
+    # Check for genuine authentication redirect indicators
+    AUTH_PATH_PATTERNS = (
+        "/login", "/signin", "/sign-in", "/log-in", "/auth",
+        "/users/login", "/users/sign_in", "/account/login",
+        "/session/new", "/admin/login", "/member/login"
+    )
+    is_target_auth = any(target_path.endswith(p) or p in target_path for p in AUTH_PATH_PATTERNS)
+    is_failure_auth_path = any(fail_path.endswith(p) or p in fail_path for p in AUTH_PATH_PATTERNS)
+
+    # Check query params indicating a return_url / redirect to auth
+    query_params = parse_qs(fail_parsed.query)
+    has_auth_query = any(k.lower() in ("returnurl", "redirect", "redirect_to", "next", "continue") for k in query_params)
+
+    # Explicit auth text in visible error messages
+    has_auth_error_text = any(
+        re.search(r"\b(log\s*in|sign\s*in|authenticated|unauthorized|session expired|please login|login required)\b", err, re.I)
+        for err in visible_errors
+    )
+
+    # An auth redirect is when failure URL is an auth wall that was NOT the intended target
+    auth_redirect = (is_failure_auth_path and not is_target_auth) or has_auth_query or has_auth_error_text
+
+    # Expected navigation: failure is on the same domain and not an auth redirect
+    same_domain = (fail_parsed.netloc.lower() == target_parsed.netloc.lower())
+
+    # Check if test steps, title, or intent expect this destination
+    test_context_str = " ".join([
+        str(current_test.get("title", "")),
+        str(current_test.get("intent", "")),
+        str(current_test.get("description", "")),
+        " ".join(str(s) for s in current_test.get("steps", [])),
+    ]).lower()
+
+    path_slug = fail_path.split("/")[-1] if fail_path else ""
+    matches_intent = bool(path_slug and (path_slug in test_context_str or path_slug.replace("_", " ") in test_context_str))
+
+    expected = (not auth_redirect) and (same_domain or matches_intent)
+
+    return NavigationInfo(
+        expected=expected,
+        auth_redirect=auth_redirect,
+        target_url=target_url,
+        failure_url=failure_url,
+    )
 
 
 def _storage_state_path_for(test_file_path: Optional[str]) -> Optional[str]:
@@ -83,7 +158,8 @@ A Playwright automated user journey test has executed. Your job is to answer:
 1. "PASS": The user capability succeeded and all functional state transitions were confirmed.
 2. "NEED_HEAL": A Test Automation Defect. The application may be functioning, but the automated test script failed.
    Evidence examples:
-   - Authentication / Session redirect: The test attempted to navigate directly to a protected page (e.g., /inventory, /dashboard) without logging in or loading a saved storage_state, causing the application to redirect to a login screen or show a login-required error (e.g. 'Epic sadface: You can only access... when you are logged in'). This is an automation setup defect, NOT an application bug.
+   - Authentication / Session redirect: The test attempted to navigate directly to a protected page without logging in or loading a saved storage_state, causing the application to redirect to a login screen or show a login-required error. This is an automation setup defect, NOT an application bug.
+   - Forward navigation to content pages (e.g. / -> /contact_us) is EXPECTED journey progression, NOT an authentication redirect.
    - Locator resolved to a hidden responsive variant (e.g., 'locator resolved to hidden <span>Contact Us</span>' - the element exists, but the test selected the hidden responsive variant or failed to open the menu drawer first).
    - Locator not found or wrong selector.
    - Test code error (missing import, NameError, wrong Playwright API usage).
@@ -94,7 +170,7 @@ A Playwright automated user journey test has executed. Your job is to answer:
    - Uncaught application JavaScript exception originating from the application code.
    - Application crash or broken business logic (e.g., valid form submission triggered an unexpected error page).
 
-Analyze the test scenario goal, target URL, failure URL, visible error banners, error summary, stderr, stdout, and test code.
+Analyze the test scenario goal, target URL, failure URL, navigation classification, visible error banners, error summary, stderr, stdout, and test code.
 Return strictly a JSON object:
 {
   "verdict": "PASS" | "NEED_HEAL" | "SUSPECTED_APP_FAILURE",
@@ -177,6 +253,13 @@ def analyzer_node(state: ForgeState) -> Dict[str, Any]:
         return {"analysis": analysis, "suite_summary": suite_summary}
 
 
+    # Setup telemetry and normalized failure context
+    target_url = current_test.get("page_url") or state.get("target_url") or ""
+    failure_url = exec_res.get("failure_url") or ""
+    visible_errors = exec_res.get("visible_errors") or []
+    nav_info = classify_navigation(target_url, failure_url, current_test, visible_errors)
+    discovery_url = failure_url if (failure_url and failure_url.startswith("http")) else target_url
+
     # Test failed: check heal budget
     if heal_attempt >= max_heal_attempts:
         logger.warning(f"[ANALYZER] Heal budget exceeded ({heal_attempt}/{max_heal_attempts}) for '{current_test.get('id')}'. Routing to verification.")
@@ -186,26 +269,38 @@ def analyzer_node(state: ForgeState) -> Dict[str, Any]:
             "failure_type": "max_heals_exceeded",
             "suggested_fix": "Verify if application UI or backend changed unexpectedly.",
         }
-        return {"analysis": analysis, "suite_summary": suite_summary}
+        failure_context: FailureContext = {
+            "target_url": target_url,
+            "failure_url": failure_url,
+            "discovery_url": discovery_url,
+            "navigation": nav_info,
+            "page_loaded": bool(failure_url and failure_url.startswith("http")),
+            "expected": current_test.get("expected_outcome") or "Expected user journey to complete",
+            "actual": exec_res.get("error_summary") or "Maximum heal attempts reached",
+            "failed_step": "max_heals_exceeded",
+            "error": exec_res.get("error_summary"),
+            "error_summary": exec_res.get("error_summary"),
+            "screenshot": (exec_res.get("screenshot_paths") or [None])[0] if exec_res.get("screenshot_paths") else None,
+            "trace": exec_res.get("trace_path"),
+            "console_errors": [],
+            "network_errors": [],
+            "visible_errors": visible_errors,
+            "error_elements": exec_res.get("error_elements", []),
+        }
+        return {"analysis": analysis, "suite_summary": suite_summary, "failure_context": failure_context}
 
     # Analyze failure cause with LLM
     stderr = exec_res.get("stderr", "")
     stdout = exec_res.get("stdout", "")
     test_code = state.get("test_code", "")
 
-    target_url = current_test.get("page_url") or state.get("target_url") or ""
-    failure_url = exec_res.get("failure_url") or ""
-    visible_errors = exec_res.get("visible_errors") or []
-    redirect_detected = bool(
-        failure_url and target_url and _normalize_url(failure_url) != _normalize_url(target_url)
-    )
-
     analyzer_payload = {
         "test_id": current_test.get("id"),
         "test_title": current_test.get("title"),
         "target_url": target_url,
         "failure_url": failure_url,
-        "redirect_detected": redirect_detected,
+        "discovery_url": discovery_url,
+        "navigation": nav_info,
         "visible_errors": visible_errors,
         "error_summary": exec_res.get("error_summary"),
         "stderr": stderr[-2000:],
@@ -246,15 +341,11 @@ def analyzer_node(state: ForgeState) -> Dict[str, Any]:
 
         # Safety override: If the application redirected an unauthenticated test or showed login errors,
         # it is an automation setup defect (NEED_HEAL), NOT an application bug.
-        is_auth_redirect = redirect_detected or any(
-            re.search(r"\b(log\s*in|sign\s*in|authenticated|unauthorized|session expired)\b", err, re.I)
-            for err in visible_errors
-        )
-        if is_auth_redirect and verdict == "SUSPECTED_APP_FAILURE":
+        if nav_info.get("auth_redirect") and verdict == "SUSPECTED_APP_FAILURE":
             verdict = "NEED_HEAL"
             failure_type = "authentication_redirect"
             suggested_fix = (
-                f"Test redirected from protected route '{target_url}' to '{failure_url}'. "
+                f"Test redirected from protected route '{target_url}' to auth page '{failure_url}'. "
                 "Initialize context with saved storage_state or prepend login authentication steps."
             )
 
@@ -266,14 +357,10 @@ def analyzer_node(state: ForgeState) -> Dict[str, Any]:
         }
     except Exception as e:
         logger.warning(f"[ANALYZER] LLM defect analysis failed ({e}). Defaulting to NEED_HEAL heuristic.")
-        is_auth_redirect = redirect_detected or any(
-            re.search(r"\b(log\s*in|sign\s*in|authenticated|unauthorized|session expired)\b", err, re.I)
-            for err in visible_errors
-        )
-        if is_auth_redirect:
+        if nav_info.get("auth_redirect"):
             analysis = {
                 "verdict": "NEED_HEAL",
-                "reason": f"Protected route redirected to '{failure_url}'. Authentication required.",
+                "reason": f"Protected route redirected to auth page '{failure_url}'. Authentication required.",
                 "failure_type": "authentication_redirect",
                 "suggested_fix": "Initialize context with saved storage_state or prepend login authentication steps.",
             }
@@ -284,6 +371,25 @@ def analyzer_node(state: ForgeState) -> Dict[str, Any]:
                 "failure_type": "selector_or_timing",
                 "suggested_fix": "Refine locators and adjust wait times.",
             }
+
+    failure_context: FailureContext = {
+        "target_url": target_url,
+        "failure_url": failure_url,
+        "discovery_url": discovery_url,
+        "navigation": nav_info,
+        "page_loaded": bool(failure_url and failure_url.startswith("http")),
+        "expected": current_test.get("expected_outcome") or "Expected user journey to complete",
+        "actual": analysis.get("reason") or exec_res.get("error_summary") or "Assertion or interaction failed",
+        "failed_step": analysis.get("failure_type") or "Step execution",
+        "error": exec_res.get("error_summary"),
+        "error_summary": exec_res.get("error_summary"),
+        "screenshot": (exec_res.get("screenshot_paths") or [None])[0] if exec_res.get("screenshot_paths") else None,
+        "trace": exec_res.get("trace_path"),
+        "console_errors": [],
+        "network_errors": [],
+        "visible_errors": visible_errors,
+        "error_elements": exec_res.get("error_elements", []),
+    }
 
     # Prefer the test_id slug over the numeric primary key, which is meaningless in logs.
     log_test_id = current_test.get("test_id") or current_test.get("id")
@@ -298,4 +404,8 @@ def analyzer_node(state: ForgeState) -> Dict[str, Any]:
             "error": analysis["reason"],
         })
 
-    return {"analysis": analysis, "suite_summary": suite_summary}
+    return {
+        "analysis": analysis,
+        "suite_summary": suite_summary,
+        "failure_context": failure_context,
+    }

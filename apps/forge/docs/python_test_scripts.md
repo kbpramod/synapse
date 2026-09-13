@@ -51,10 +51,12 @@ def test_journey():
             # Failure Telemetry: Captures actual landing URL, visible error banners, and full-page screenshot
             try:
                 print(f"[FAILURE_URL] {page.url}")
-                error_texts = page.locator(".error, .alert, [role='alert'], [data-test='error'], h1, h2, h3").all_inner_texts()
-                clean_errors = [t.strip() for t in error_texts if t and t.strip()]
+                err_sel = "[role='alert'], .alert-danger, .alert-warning, .error-message, .error-msg, .error:not(input):not(form), .invalid-feedback, [data-test='error'], [data-testid='error']"
+                raw_errors = [t.strip() for t in page.locator(err_sel).all_inner_texts() if t and t.strip()]
+                clean_errors = [t for t in raw_errors if not re.search(r"\b(success|successfully|subscribed)\b", t, re.I)]
                 if clean_errors:
                     print(f"[VISIBLE_ERRORS] {json.dumps(clean_errors[:5])}")
+                    print(f"[ERROR_ELEMENTS] {json.dumps([err_sel][:5])}")
                 page.screenshot(path=storage_path.replace(".storage_state.json", "_failure.png"), full_page=True)
             except Exception:
                 pass
