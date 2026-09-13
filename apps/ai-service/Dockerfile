@@ -3,6 +3,12 @@ FROM python:3.11-slim
 # Copy uv and uvx binaries from official Astral uv image
 COPY --from=ghcr.io/astral-sh/uv:latest /uv /uvx /bin/
 
+# Install system dependencies required to build and run psycopg2
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    gcc \
+    libpq-dev \
+    && rm -rf /var/lib/apt/lists/*
+
 WORKDIR /app
 
 # Prevent bytecode generation, unbuffer logs, and compile bytecode during install
