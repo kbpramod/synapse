@@ -6,6 +6,7 @@ from typing import Any, Dict, List, Optional
 from agents.llm import get_chat_model
 from agents.state import ForgeState, HealEvent
 from langchain_core.messages import SystemMessage, HumanMessage
+from db.repository import ForgeRepository
 
 logger = logging.getLogger("forge.agent.healer")
 
@@ -23,9 +24,13 @@ STRICT CONSTRAINTS & RULES:
    If an element is reported hidden (e.g. 'locator resolved to hidden element'), check if this is a responsive layout difference.
    For example, if testing mobile viewport and the target link is in a collapsed menu, plan to click the visible mobile menu toggle first, or use the locator corresponding to the visible variant.
 
-3. GROUNDED LOCATORS & ACTIONS:
-   Every selector, role, text, or route you recommend MUST come directly from `available_elements_in_dom`, `target_url`, or the test scenario intent.
-   NEVER recommend non-existent hypothetical selectors (e.g., do not invent role="navigation" or class names not listed).
+3. GROUNDED LOCATORS & ACTIONS (IMMUTABLE TECHNICAL EVIDENCE):
+   - CRITICAL ARCHITECTURAL RULE: Locators discovered from the DOM are exact technical evidence.
+   - NEVER spell-correct, normalize, or semantically rewrite them during agent-to-agent transfer.
+     * Example: If discovery found `#susbscribe_email`, preserve EXACTLY `#susbscribe_email`. NEVER diagnose it as a typo or rewrite it to `#subscribe_email`.
+     * Example: If discovery found `<button id="subscribe">`, instruct the Editor to use `page.locator("#subscribe")`. Do NOT recommend `get_by_role("button", name=...)` if the button lacks visible text (e.g. icon buttons).
+   - When diagnosing a failed `get_by_role(...)` or `get_by_text(...)`, check if a button with an ID or CSS selector exists in `available_elements_in_dom` (e.g. `#subscribe`). Recommend targeting that exact ID selector (`page.locator("#...")`) with `.scroll_into_view_if_needed()`.
+   - Every selector or ID you recommend MUST come directly from `available_elements_in_dom`. NEVER invent hypothetical selectors.
 
 4. AVOID INVENTED DESTINATION PATHS:
    Never instruct the test to assert a hardcoded redirect route unless that route is explicitly present in the application's discovered links.
@@ -99,8 +104,8 @@ def healer_node(state: ForgeState) -> Dict[str, Any]:
     disc = state.get("discovery_data") or {}
     disc_source = "state.discovery_data" if disc else "missing"
 
+    # Fallback: check disk cache
     if not disc or not disc.get("elements"):
-        # Attempt to load discovery snapshot from disk cache
         try:
             from storage.local import get_discovery_storage_dir, get_page_folder
             if target_url:
@@ -108,7 +113,7 @@ def healer_node(state: ForgeState) -> Dict[str, Any]:
                 if disc_file.exists():
                     with open(disc_file, "r", encoding="utf-8") as f:
                         disc = json.load(f)
-                        disc_source = f"disk cache ({disc_file})"
+                        disc_source = f"discovery disk cache ({disc_file})"
                 else:
                     page_file = get_page_folder(target_url) / "index.json"
                     if page_file.exists():
@@ -121,7 +126,6 @@ def healer_node(state: ForgeState) -> Dict[str, Any]:
     # Fallback: check PostgreSQL repository
     if not disc or not disc.get("elements"):
         try:
-            from db.repository import ForgeRepository
             if target_url:
                 page_rec = ForgeRepository.get_page_by_url(target_url)
                 if page_rec and page_rec.get("metadata_json"):
@@ -145,25 +149,21 @@ def healer_node(state: ForgeState) -> Dict[str, Any]:
     body_text_preview = ((disc.get("text") or {}).get("body_text_preview") or "")[:400]
 
     logger.info(f"[HEAL:DISCOVERY] Source of discovery data: {disc_source}")
-    if disc:
-        logger.info(f"[HEAL:DISCOVERY] Snapshot URL   : '{disc_url}' (Target URL: '{target_url}')")
-        logger.info(f"[HEAL:DISCOVERY] Snapshot Title : '{disc_title}'")
-        logger.info(
-            f"[HEAL:DISCOVERY] Raw Elements Discovered: "
-            f"Buttons={len(raw_buttons)}, Inputs={len(raw_inputs)}, Links={len(raw_links)}, "
-            f"Selects={len(raw_selects)}, Forms={len(raw_forms)}, Headings={len(raw_headings)}"
-        )
-        if disc_url and target_url and disc_url.rstrip("/") != target_url.rstrip("/"):
-            logger.warning(
-                f"[HEAL:DISCOVERY:MISMATCH] Discovery snapshot was taken on '{disc_url}', "
-                f"which DOES NOT MATCH target URL '{target_url}'! "
-                "This indicates discovery redirected (e.g. unauthenticated redirect to login) "
-                "or discovery ran on a different page."
-            )
-    else:
+    logger.info(f"[HEAL:DISCOVERY] Snapshot URL   : '{disc_url}' (Target URL: '{target_url}')")
+    logger.info(f"[HEAL:DISCOVERY] Snapshot Title : '{disc_title}'")
+    logger.info(
+        f"[HEAL:DISCOVERY] Raw Elements Discovered: "
+        f"Buttons={len(raw_buttons)}, Inputs={len(raw_inputs)}, "
+        f"Links={len(raw_links)}, Selects={len(raw_selects)}, "
+        f"Forms={len(raw_elements.get('forms', []))}, "
+        f"Headings={len(raw_elements.get('headings', []))}"
+    )
+
+    if disc_url and target_url and disc_url.rstrip("/") != target_url.rstrip("/"):
         logger.warning(
-            f"[HEAL:DISCOVERY:WARNING] No discovery data found anywhere for '{target_url}'! "
-            "Discovery data is empty in state, disk cache, and database. Healer will have no elements to reference."
+            f"[HEAL:DISCOVERY] URL MISMATCH! Discovery snapshot was taken on '{disc_url}', "
+            f"but test target is '{target_url}'. "
+            f"This often indicates a redirect during discovery (e.g. auth redirect to login)."
         )
 
     # ---------------------------------------------------------
@@ -171,15 +171,37 @@ def healer_node(state: ForgeState) -> Dict[str, Any]:
     # ---------------------------------------------------------
     error_summary = exec_res.get("error_summary") or ""
     stderr = exec_res.get("stderr") or ""
-    # Extract any targeted selector or text from error messages
+    full_error_text = f"{error_summary} {stderr}"
+
     targeted_selector = None
-    selector_match = re.search(r'''(?:locator|wait_for_selector|click|fill|select_option)\s*\(\s*['"]([^'"]+)['"]''', error_summary + " " + stderr)
+    targeted_keywords = []
+
+    # 1. Direct locator/click/fill/select_option matches
+    selector_match = re.search(r'''(?:locator|wait_for_selector|click|fill|select_option)\s*\(\s*['"]([^'"]+)['"]''', full_error_text)
     if selector_match:
         targeted_selector = selector_match.group(1)
-    elif "Timeout" in error_summary and "#" in error_summary:
-        hash_match = re.search(r'(#[\w\-]+)', error_summary)
-        if hash_match:
-            targeted_selector = hash_match.group(1)
+        targeted_keywords.append(targeted_selector.lower())
+
+    # 2. get_by_role / get_by_text matches
+    role_match = re.search(r'''get_by_role\s*\(\s*['"](\w+)['"](?:,\s*name=(?:re\.compile\([rR]?['"]([^'"]+)['"]|['"]([^'"]+)['"]))?''', full_error_text)
+    if role_match:
+        kw = role_match.group(2) or role_match.group(3)
+        if kw:
+            targeted_keywords.append(kw.lower())
+
+    text_match = re.search(r'''get_by_text\s*\(\s*['"]([^'"]+)['"]''', full_error_text)
+    if text_match:
+        targeted_keywords.append(text_match.group(1).lower())
+
+    # 3. Hash IDs in error messages
+    for hash_m in re.findall(r'(#[\w\-]+)', full_error_text):
+        targeted_keywords.append(hash_m.lower())
+        if not targeted_selector:
+            targeted_selector = hash_m
+
+    # 4. Context keywords from current test
+    scenario_kw = re.findall(r'[a-zA-Z0-9_\-#]+', f"{current_test.get('id', '')} {current_test.get('title', '')} {' '.join(current_test.get('steps', []))}".lower())
+    targeted_keywords.extend([k for k in scenario_kw if len(k) >= 4])
 
     if targeted_selector:
         in_buttons = [b for b in raw_buttons if targeted_selector in (b.get("selector") or "") or targeted_selector in (b.get("id") or "") or targeted_selector in (b.get("text") or "")]
@@ -198,31 +220,26 @@ def healer_node(state: ForgeState) -> Dict[str, Any]:
             )
 
     # ---------------------------------------------------------
-    # 3. BUILD FILTERED DOM ELEMENTS FOR LLM
+    # 3. BUILD FILTERED DOM ELEMENTS FOR LLM (RELEVANCE RANKED)
     # ---------------------------------------------------------
-    # Ensure any element matching targeted_selector is prioritized at the top
-    def _prioritize(elements_list: list, match_str: Optional[str]) -> list:
-        if not match_str:
-            return elements_list
-        matched = []
-        unmatched = []
+    def _rank_elements(elements_list: list, max_items: int) -> list:
+        scored = []
         for el in elements_list:
-            el_str = f"{el.get('selector', '')} {el.get('id', '')} {el.get('name', '')} {el.get('text', '')}"
-            if match_str in el_str:
-                matched.append(el)
-            else:
-                unmatched.append(el)
-        return matched + unmatched
+            score = 0
+            el_text = f"{el.get('selector', '')} {el.get('id', '')} {el.get('name', '')} {el.get('text', '')} {el.get('placeholder', '')} {el.get('forge_id', '')}".lower()
+            for kw in targeted_keywords:
+                if kw in el_text:
+                    score += 2
+            if el.get("id"):
+                score += 1
+            scored.append((score, el))
+        scored.sort(key=lambda item: item[0], reverse=True)
+        return [item[1] for item in scored[:max_items]]
 
-    prioritized_buttons = _prioritize(raw_buttons, targeted_selector)
-    prioritized_inputs = _prioritize(raw_inputs, targeted_selector)
-    prioritized_links = _prioritize(raw_links, targeted_selector)
-
-    # Slicing limits to fit LLM context window
-    MAX_BUTTONS, MAX_INPUTS, MAX_LINKS, MAX_SELECTS = 30, 20, 30, 10
-    sliced_buttons = prioritized_buttons[:MAX_BUTTONS]
-    sliced_inputs = prioritized_inputs[:MAX_INPUTS]
-    sliced_links = prioritized_links[:MAX_LINKS]
+    MAX_BUTTONS, MAX_INPUTS, MAX_LINKS, MAX_SELECTS = 35, 25, 30, 10
+    sliced_buttons = _rank_elements(raw_buttons, MAX_BUTTONS)
+    sliced_inputs = _rank_elements(raw_inputs, MAX_INPUTS)
+    sliced_links = _rank_elements(raw_links, MAX_LINKS)
     sliced_selects = raw_selects[:MAX_SELECTS]
 
     available_elements = {
@@ -331,7 +348,6 @@ def healer_node(state: ForgeState) -> Dict[str, Any]:
     # Available accounts
     available_accounts = []
     try:
-        from db.repository import ForgeRepository
         scoped_website_id = state.get("website_id") or current_test.get("website_id")
         if scoped_website_id:
             accounts = ForgeRepository.get_credentials_for_website(int(scoped_website_id))

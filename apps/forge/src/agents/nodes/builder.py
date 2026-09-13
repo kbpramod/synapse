@@ -65,11 +65,17 @@ Requirements for the generated Playwright Python test:
    if __name__ == "__main__":
        test_{test_id}()
 
-3. Grounded Interaction Path Selection:
-   - STRICTLY use ONLY the discovered elements list and links provided in context.
-   - Do NOT assume or invent hypothetical elements (e.g. do not look for role="navigation" or role="button" unless it was discovered).
-   - If grounding_evidence mentions elements, match against discovered element selectors, forge_ids, or text.
-   - Prefer `page.get_by_role(...)`, `page.get_by_text(...)`, `page.get_by_label(...)`, `page.locator(...)`.
+3. Grounded Interaction Path Selection & DOM Evidence Invariant:
+   - CRITICAL ARCHITECTURAL RULE: Discovered DOM locators, IDs, attributes, classes, and names are immutable technical evidence.
+   - NEVER spell-correct, normalize, or semantically rewrite discovered locators during agent-to-agent transfer.
+     * Example: If discovery found `#susbscribe_email`, you MUST write `page.locator("#susbscribe_email")`. NEVER "correct" it to `#subscribe_email`.
+     * Example: If discovery found `<button id="subscribe">` with no visible text, you MUST write `page.locator("#subscribe")`. NEVER guess `page.get_by_role("button", name="subscribe")`.
+   - Locator Priority Hierarchy:
+     1. Exact ID or CSS selector: If an element has an ID or unique selector (e.g. `id="subscribe"`, `id="susbscribe_email"`), ALWAYS prioritize `page.locator("#<id>")`.
+     2. Inputs: Use `page.locator("#<id>")`, or `page.get_by_placeholder(...)` / `page.get_by_label(...)` if verified in discovery.
+     3. Buttons/Links with explicit text: Use `page.get_by_role("button", name="...")` or `page.get_by_role("link", name="...")` ONLY when the element actually contains that visible text. If it is an icon button or has empty text, use its CSS selector/ID (`page.locator("#...")`).
+     4. Pre-interaction scrolling: ALWAYS call `.scroll_into_view_if_needed()` before interacting with elements that may be located in footers, drawers, or off-screen sections.
+   - STRICTLY use ONLY the discovered elements list and links provided in context. Do NOT invent hypothetical roles, classes, or names.
 
 4. Always assert state transitions and functional outcomes:
    - ASSERT ONLY WHAT `assertable_signals` SUPPORTS. That block is derived from what the
@@ -161,9 +167,12 @@ Requirements for the generated Playwright test:
        // actions
      });
    });
-3. Use modern, resilient Playwright locators:
-   - Prefer `page.getByRole(...)`, `page.getByText(...)`, `page.getByLabel(...)`, `page.getByPlaceholder(...)`
-   - Use discovered element forge_ids or selectors as reliable targets
+3. Use modern, resilient Playwright locators & Exact DOM Evidence:
+   - CRITICAL ARCHITECTURAL RULE: Discovered DOM locators, IDs, attributes, and names are immutable technical evidence.
+   - NEVER spell-correct, normalize, or semantically rewrite discovered locators (e.g. if discovery found `#susbscribe_email`, use `page.locator('#susbscribe_email')`).
+   - When an element has an exact ID or selector (e.g. `#subscribe`, `#susbscribe_email`), ALWAYS prioritize `page.locator('#...')`.
+   - Never guess semantic names for icon buttons or buttons without explicit text.
+   - Prefer `page.locator('#id')`, `page.getByPlaceholder(...)`, `page.getByLabel(...)`, or `page.getByRole(...)` only when text is verified.
 4. Always include explicit assertions:
    - `await expect(page).toHaveTitle(...)`
    - `await expect(locator).toBeVisible()`
@@ -233,6 +242,34 @@ def builder_node(state: ForgeState) -> Dict[str, Any]:
         f"[viewport={target_vp_name} ({vp_dims['width']}x{vp_dims['height']})] (heal_attempt={heal_attempt})"
     )
 
+    test_type = str(current_test.get("type", "FLOW")).strip().upper()
+    intent = current_test.get("intent") or current_test.get("goal") or current_test.get("description", "")
+    expected = current_test.get("expected") or [current_test.get("expected_outcome", "")]
+    evidence = current_test.get("evidence", [])
+
+    # Relevance-score and prioritize elements based on scenario keywords to ensure
+    # critical form elements (like footers, modals, or submit buttons) are never lost.
+    scenario_text = f"{current_test.get('id', '')} {intent} {' '.join(current_test.get('steps', []))} {' '.join(expected)} {' '.join(evidence)}".lower()
+    keywords = {w for w in re.findall(r'[a-zA-Z0-9_\-#]+', scenario_text) if len(w) >= 3}
+
+    def _rank_elements(elements_list: list, max_items: int) -> list:
+        scored = []
+        for el in elements_list:
+            score = 0
+            el_text = f"{el.get('selector', '')} {el.get('id', '')} {el.get('name', '')} {el.get('text', '')} {el.get('placeholder', '')} {el.get('forge_id', '')}".lower()
+            for kw in keywords:
+                if kw in el_text:
+                    score += 2
+            if el.get("id"):
+                score += 1
+            scored.append((score, el))
+        scored.sort(key=lambda item: item[0], reverse=True)
+        return [item[1] for item in scored[:max_items]]
+
+    raw_buttons = disc.get("elements", {}).get("buttons", [])
+    raw_inputs = disc.get("elements", {}).get("inputs", [])
+    raw_links = disc.get("elements", {}).get("links", [])
+
     # Sample of discovered elements with viewport visibility flags
     elements_sample = {
         "buttons": [
@@ -244,7 +281,7 @@ def builder_node(state: ForgeState) -> Dict[str, Any]:
                 "visible_viewports": b.get("visible_viewports", ["desktop"]),
                 "visible_in_target_viewport": target_vp_name in b.get("visible_viewports", ["desktop"]),
             }
-            for b in (disc.get("elements", {}).get("buttons", []))[:15]
+            for b in _rank_elements(raw_buttons, 35)
         ],
         "inputs": [
             {
@@ -253,14 +290,12 @@ def builder_node(state: ForgeState) -> Dict[str, Any]:
                 "name": i.get("name"),
                 "placeholder": i.get("placeholder"),
                 "selector": i.get("selector"),
-                # Observed initial state for checkbox/radio inputs — None for other types.
-                # Without this the model guesses ("checkbox 1 is checked") and the test fails
-                # on its own precondition.
+                "id": i.get("id"),
                 "checked_at_load": i.get("checked"),
                 "visible_viewports": i.get("visible_viewports", ["desktop"]),
                 "visible_in_target_viewport": target_vp_name in i.get("visible_viewports", ["desktop"]),
             }
-            for i in (disc.get("elements", {}).get("inputs", []))[:15]
+            for i in _rank_elements(raw_inputs, 25)
         ],
         "links": [
             {
@@ -270,14 +305,9 @@ def builder_node(state: ForgeState) -> Dict[str, Any]:
                 "visible_viewports": l.get("visible_viewports", ["desktop"]),
                 "visible_in_target_viewport": target_vp_name in l.get("visible_viewports", ["desktop"]),
             }
-            for l in (disc.get("elements", {}).get("links", []))[:10]
+            for l in _rank_elements(raw_links, 20)
         ]
     }
-
-    test_type = str(current_test.get("type", "FLOW")).strip().upper()
-    intent = current_test.get("intent") or current_test.get("goal") or current_test.get("description", "")
-    expected = current_test.get("expected") or [current_test.get("expected_outcome", "")]
-    evidence = current_test.get("evidence", [])
 
     # Real registered test accounts for THIS website, so login/authenticated journeys are
     # written against credentials that actually work instead of invented placeholders.

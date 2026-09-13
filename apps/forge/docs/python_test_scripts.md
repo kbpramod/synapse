@@ -90,17 +90,18 @@ Assertions use the synchronous `expect` API:
 
 ## Running Generated Tests Directly
 
-You can execute any generated Python test directly:
-
 ```bash
-# Run with Python interpreter directly
-uv run python storage/wecatchai.com/tests/test_page_smoke.py
+# Option 1: Run the test script directly with python (headed by default)
+uv run python playwright-tests/test_001.py
 
-# Run with visible browser
-$env:HEADLESS="false"; uv run python storage/wecatchai.com/tests/test_page_smoke.py
+# Option 2: Use the standalone test runner script
+uv run python playwright-tests/run_test.py playwright-tests/test_001.py
 
-# Or execute with pytest
-uv run pytest storage/wecatchai.com/tests/test_page_smoke.py
+# Option 3: Run headless via the runner or env flag
+uv run python playwright-tests/run_test.py playwright-tests/test_001.py --headless
+
+# Option 4: Execute with pytest
+uv run pytest playwright-tests/test_001.py -s
 ```
 
 ---

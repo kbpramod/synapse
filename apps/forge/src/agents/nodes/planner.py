@@ -89,6 +89,11 @@ You are provided with `existing_tests_for_page`. These test journeys have ALREAD
 DO NOT regenerate, replicate, or duplicate tests that cover these existing intents.
 Only synthesize NEW test hypotheses for newly discovered capabilities, unverified interactive elements, or untested edge cases.
 
+CRITICAL ARCHITECTURAL RULE: DOM LOCATORS ARE IMMUTABLE TECHNICAL EVIDENCE:
+- Element selectors, IDs, attributes, and text discovered from the DOM are exact technical evidence.
+- NEVER spell-correct, normalize, or semantically rewrite discovered locators during agent-to-agent transfer (e.g. if discovery found `#susbscribe_email`, preserve `#susbscribe_email` verbatim in evidence and steps; NEVER rewrite it to `#subscribe_email`).
+- When buttons or inputs have specific IDs (e.g. `#subscribe`, `#susbscribe_email`), reference those exact IDs in the steps and evidence.
+
 For each test hypothesis, provide strictly:
 - id: Descriptive slug prefixed with type, e.g. "smoke_primary_navigation", "flow_login", "flow_contact_submission"
 - type: Exactly "SMOKE" or "FLOW"
@@ -96,9 +101,9 @@ For each test hypothesis, provide strictly:
 - preconditions: List of prerequisites (e.g. ["valid credentials are available", "homepage is loaded"])
 - steps: Action sequence to execute the journey
 - expected: List of expected outcomes/assertions (e.g. ["user reaches authenticated application state"])
-- evidence: Grounding evidence ACTUALLY OBSERVED in the discovery data — element names/text
+- evidence: Grounding evidence ACTUALLY OBSERVED in the discovery data — exact element IDs/selectors/text
   from the discovered elements, and routes only if that exact href appears in available_links
-  (e.g. ["element:email", "element:password", "element:login_button"])
+  (e.g. ["#susbscribe_email", "#subscribe", "element:login_button"])
 - supported_viewports: ["desktop", "tablet", "mobile"]
 - priority: "high", "medium", or "low"
 
@@ -274,22 +279,36 @@ def planner_node(state: ForgeState) -> Dict[str, Any]:
         "key_elements": understanding.get("key_interactive_elements", []),
         "viewports_summary": vp_summary,
         "available_buttons": [
-            {"text": b.get("text"), "visible_viewports": b.get("visible_viewports", ["desktop"])}
-            for b in elements.get("buttons", [])[:12]
+            {
+                "id": b.get("id"),
+                "selector": b.get("selector"),
+                "text": b.get("text"),
+                "forge_id": b.get("forge_id"),
+                "visible_viewports": b.get("visible_viewports", ["desktop"]),
+            }
+            for b in elements.get("buttons", [])[:30]
         ],
         "available_links": [
-            {"text": l.get("text"), "href": l.get("href"), "visible_viewports": l.get("visible_viewports", ["desktop"])}
-            for l in elements.get("links", [])[:12]
+            {
+                "id": l.get("id"),
+                "text": l.get("text"),
+                "href": l.get("href"),
+                "selector": l.get("selector"),
+                "visible_viewports": l.get("visible_viewports", ["desktop"]),
+            }
+            for l in elements.get("links", [])[:20]
         ],
         "available_inputs": [
             {
+                "id": i.get("id"),
+                "selector": i.get("selector"),
                 "placeholder": i.get("placeholder"),
                 "name": i.get("name"),
                 "type": i.get("type"),
-                # Observed initial state for checkbox/radio inputs — never assume the opposite.
+                "forge_id": i.get("forge_id"),
                 "checked_at_load": i.get("checked"),
             }
-            for i in elements.get("inputs", [])[:8]
+            for i in elements.get("inputs", [])[:20]
         ],
     }
 

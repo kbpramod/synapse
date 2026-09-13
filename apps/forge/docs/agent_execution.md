@@ -88,6 +88,25 @@ To eliminate "black box" behavior when tests fail or elements seem missing, the 
 - **`[HEAL:TELEMETRY]`**: Summarizes target URL, failure landing URL, redirect flags, on-screen error banners, available `storage_state`, and registered accounts.
 - **`[HEAL:LLM_RESULT]`**: Displays the final Failure Class, Root-Cause Diagnosis, Fix Plan, and Preserved test assertions.
 
+### 5. Architectural Invariant: DOM Locators Are Immutable Technical Evidence
+Locators discovered from the live DOM by the Discovery Agent represent immutable technical ground truth. Across all agent hand-offs (Discovery → Planner → Builder → Healer → Editor → Runner):
+
+1. **Zero Spelling Normalization**:
+   Agents must NEVER spell-correct, normalize, or semantically rewrite discovered attributes:
+   - *Discovery Agent*: Finds locator `#susbscribe_email`
+   - *Planner / Builder / Healer*: Must preserve `#susbscribe_email` verbatim. Never treat it as a typo or rewrite it to `#subscribe_email`.
+   - *Playwright Runner*: Executes against the real DOM element without timeouts.
+
+2. **Exact Selector Priority Over Guessed Semantic Names**:
+   When an element in the DOM has an ID or unique selector (such as `<button id="subscribe">` containing an arrow icon and no text content), agents must prioritize `page.locator("#subscribe")`. Inventing semantic role selectors like `get_by_role("button", name=re.compile("subscribe"))` fails on icon-only or text-less controls.
+
+3. **Relevance-Ranked DOM Element Feeds**:
+   Instead of naively truncating elements with `[:15]` from the top of the DOM, the Builder, Healer, and Editor rank elements by relevance scoring against scenario keywords, error summaries, and element IDs. This guarantees off-screen or footer form elements (e.g. submit buttons located deep in the DOM) are never truncated or lost from agent context windows.
+
+4. **Idempotent Healing Guard**:
+   When an Editor modification produces byte-identical code (`NO CHANGE APPLIED`), the system flags the lack of diff to avoid burning healing iterations on idempotent failures.
+
+
 ---
 
 ## 5. Distributed Scheduled Execution

@@ -1,6 +1,7 @@
 import ast
 import json
 import logging
+import re
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 from langchain_core.messages import SystemMessage, HumanMessage
@@ -48,7 +49,11 @@ You operate like a professional coding assistant:
     - If `storage_state_available` is provided: Update the context creation to reuse the session:
       `context = browser.new_context(viewport={"width": ...}, storage_state="<path>")`
     - If `storage_state_available` is not available: Insert a sign-in interaction sequence at the start of the test using `available_accounts` (e.g. goto login URL, fill username & password, submit, wait for load) before navigating to the target page.
-11. Return ONLY the complete, edited script code without markdown fences, or wrapped in a single ```python or ```typescript code fence.
+11. CRITICAL ARCHITECTURAL RULE: DOM LOCATORS ARE IMMUTABLE TECHNICAL EVIDENCE:
+    - Locators discovered from the DOM are exact technical evidence. Never spell-correct, normalize, or semantically rewrite them during agent-to-agent transfer.
+    - If an element selector or attribute from discovered elements contains an apparent typo (e.g. `#susbscribe_email`), preserve it EXACTLY as discovered. Do NOT "correct" it to `#subscribe_email`.
+    - If a button has an exact ID (e.g. `#subscribe`), use `page.locator("#subscribe")`. Do NOT use `get_by_role("button", name="...")` if the button has no explicit text.
+12. Return ONLY the complete, edited script code without markdown fences, or wrapped in a single ```python or ```typescript code fence.
 """
 
 
@@ -113,7 +118,7 @@ def editor_node(state: ForgeState) -> Dict[str, Any]:
         try:
             existing_code = test_path.read_text(encoding="utf-8")
         except Exception as e:
-            logger.warning(f"[EDITOR] Failed to read {test_path} from disk ({e}), using state test_code.")
+            logger.warning(f"[EDITOR] Could not read existing test from disk: {e}")
 
     if not existing_code:
         raise ValueError(f"Cannot edit test: file {test_path} is empty or does not exist.")
@@ -144,7 +149,6 @@ def editor_node(state: ForgeState) -> Dict[str, Any]:
 
     if not disc or not disc.get("elements"):
         try:
-            from db.repository import ForgeRepository
             if target_url:
                 page_rec = ForgeRepository.get_page_by_url(target_url)
                 if page_rec and page_rec.get("metadata_json"):
@@ -166,15 +170,32 @@ def editor_node(state: ForgeState) -> Dict[str, Any]:
         f"(heal_attempt={heal_attempt}, failure_class={failure_class})"
     )
 
-    # Discovered elements for locator reference
+    # Relevance-rank discovered elements for locator reference so target form buttons/inputs are never omitted
+    edit_kw_raw = f"{test_path.stem} {diagnosis} {fix_plan} {exec_res.get('error_summary', '')} {exec_res.get('stderr', '')}"
+    edit_keywords = {w.lower() for w in re.findall(r'[a-zA-Z0-9_\-#]+', edit_kw_raw) if len(w) >= 3}
+
+    def _rank_editor_elements(elements_list: list, max_items: int) -> list:
+        scored = []
+        for el in elements_list:
+            score = 0
+            el_text = f"{el.get('selector', '')} {el.get('id', '')} {el.get('name', '')} {el.get('text', '')} {el.get('placeholder', '')} {el.get('forge_id', '')}".lower()
+            for kw in edit_keywords:
+                if kw in el_text:
+                    score += 2
+            if el.get("id"):
+                score += 1
+            scored.append((score, el))
+        scored.sort(key=lambda item: item[0], reverse=True)
+        return [item[1] for item in scored[:max_items]]
+
     elements_sample = {
         "buttons": [
             {"text": b.get("text"), "selector": b.get("selector"), "id": b.get("id"), "forge_id": b.get("forge_id")}
-            for b in (disc.get("elements", {}).get("buttons", []))[:15]
+            for b in _rank_editor_elements(disc.get("elements", {}).get("buttons", []), 35)
         ],
         "inputs": [
-            {"name": i.get("name"), "placeholder": i.get("placeholder"), "selector": i.get("selector"), "forge_id": i.get("forge_id")}
-            for i in (disc.get("elements", {}).get("inputs", []))[:15]
+            {"name": i.get("name"), "placeholder": i.get("placeholder"), "selector": i.get("selector"), "id": i.get("id"), "forge_id": i.get("forge_id")}
+            for i in _rank_editor_elements(disc.get("elements", {}).get("inputs", []), 25)
         ],
         "links": [
             {
@@ -185,7 +206,7 @@ def editor_node(state: ForgeState) -> Dict[str, Any]:
                 "forge_id": l.get("forge_id"),
                 "visible_viewports": l.get("visible_viewports", ["desktop"])
             }
-            for l in (disc.get("elements", {}).get("links", []))[:25]
+            for l in _rank_editor_elements(disc.get("elements", {}).get("links", []), 20)
         ]
     }
 
