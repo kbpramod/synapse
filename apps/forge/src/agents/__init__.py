@@ -5,6 +5,10 @@ from agents.state import (
     AnalysisResult,
     FailureContext,
     VerificationState,
+    ActionSpec,
+    PostActionResult,
+    ExpectationSpec,
+    TestProvenance,
 )
 from agents.graph import create_forge_graph
 from agents.onboarding_graph import create_onboarding_graph
@@ -19,6 +23,10 @@ __all__ = [
     "AnalysisResult",
     "FailureContext",
     "VerificationState",
+    "ActionSpec",
+    "PostActionResult",
+    "ExpectationSpec",
+    "TestProvenance",
     "create_forge_graph",
     "create_onboarding_graph",
     "create_cron_graph",

@@ -11,6 +11,18 @@ from .local import (
     save_page_discovery,
     save_site_discovery,
 )
+from .supabase_storage import get_storage_path, get_public_url
+from .test_artifact_store import (
+    ARTIFACT_NAMES,
+    classify_test_failure,
+    get_local_test_dir,
+    get_test_storage_key,
+    get_supabase_test_script_path,
+    load_test_artifacts,
+    materialize_test_script,
+    save_test_artifacts,
+    update_test_manifest,
+)
 
 __all__ = [
     "get_discovery_storage_dir",
@@ -24,4 +36,16 @@ __all__ = [
     "save_hypotheses",
     "save_page_discovery",
     "save_site_discovery",
+    "get_storage_path",
+    "get_public_url",
+    "ARTIFACT_NAMES",
+    "classify_test_failure",
+    "get_local_test_dir",
+    "get_test_storage_key",
+    "get_supabase_test_script_path",
+    "load_test_artifacts",
+    "materialize_test_script",
+    "save_test_artifacts",
+    "update_test_manifest",
 ]
+

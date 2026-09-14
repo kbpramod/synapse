@@ -9,7 +9,8 @@ from agents.llm import get_chat_model
 from agents.state import ForgeState
 from agents.script_lint import apply_lint
 from db.repository import ForgeRepository
-from storage.local import sanitize_domain, mirror_to_cloud, save_script_revision
+from storage.local import sanitize_domain, mirror_to_cloud, save_script_revision, _relative_key
+from storage.supabase_storage import get_storage_path
 
 logger = logging.getLogger("forge.agent.editor")
 
@@ -394,6 +395,8 @@ def editor_node(state: ForgeState) -> Dict[str, Any]:
     if target_url:
         try:
             domain = sanitize_domain(target_url)
+            rel_key = _relative_key(test_path)
+            supabase_script_path = get_storage_path(rel_key)
             ForgeRepository.save_test(
                 test_id=str(current_test.get("test_id") or current_test.get("id") or test_path.stem),
                 domain=domain,
@@ -404,7 +407,7 @@ def editor_node(state: ForgeState) -> Dict[str, Any]:
                 priority=current_test.get("priority", "medium"),
                 steps=current_test.get("steps", []),
                 expected_outcome=current_test.get("expected_outcome", ""),
-                script_path=str(test_path),
+                script_path=supabase_script_path,
                 test_code=edited_code,
                 language="python" if test_path.suffix == ".py" else "typescript",
                 page_id=state.get("page_id"),

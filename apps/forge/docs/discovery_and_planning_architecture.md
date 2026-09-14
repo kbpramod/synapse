@@ -63,19 +63,29 @@ flowchart TD
     AssertSignals --> FetchExistingTests
     FetchExistingTests --> PlannerLLM
 
-    %% Inner Loop: Test Hypothesis Dispatch & Build
-    subgraph InnerLoop ["INNER LOOP: Hypothesis Dispatch & Script Builder"]
+    %% Inner Loop: Test Hypothesis Dispatch & Decoupled Execution
+    subgraph InnerLoop ["INNER LOOP: Decoupled Action-Expectation Pipeline"]
         InitHypQueue["test_queue = [h1, h2, h3, ...]"]:::queue
         PopHyp{"Has hypotheses in<br/>test_queue?"}:::queue
-        BuilderNode["Test Builder LLM<br/>(Generate Playwright Python Script)"]:::agent
+        ActionBuilder["Action Builder<br/>(Synthesize ActionSpec without assertions)"]:::agent
+        ActionRunner["Action Runner<br/>(Execute Interaction Steps in Browser)"]:::agent
+        ResultDiscovery["Result Discovery<br/>(Extract DOM Delta & Network Responses)"]:::agent
+        ExpectAnalysis["Expectation Analysis<br/>(Ground Assertions from Observed Result + Intent)"]:::agent
+        CorrectnessNode["Correctness Evaluation<br/>(CORRECT, ACTION_DEFECT, EXPECTATION_DEFECT)"]:::agent
+        AssemblerNode["Testcase Assembler<br/>(Validated Action + Grounded Assertions + Provenance)"]:::agent
         LintSave["Lint, Validate & Save Script<br/>storage/<domain>/tests/..."]:::agent
         SaveTestDB["Save Test to PostgreSQL<br/>(Link: test.page_id = page.id)"]:::db
     end
 
     PlannerLLM --> InitHypQueue
     InitHypQueue --> PopHyp
-    PopHyp -- Yes --> BuilderNode
-    BuilderNode --> LintSave
+    PopHyp -- Yes --> ActionBuilder
+    ActionBuilder --> ActionRunner
+    ActionRunner --> ResultDiscovery
+    ResultDiscovery --> ExpectAnalysis
+    ExpectAnalysis --> CorrectnessNode
+    CorrectnessNode --> AssemblerNode
+    AssemblerNode --> LintSave
     LintSave --> SaveTestDB
     SaveTestDB --> PopHyp
     PopHyp -- Exhausted --> PopPage
@@ -101,16 +111,16 @@ When onboarding a web application, inspecting only the homepage leaves internal 
 - **`visited_pages` Registry**:
   - Maintained in memory during the crawl run and tracked in PostgreSQL (`pages` table) with timestamps (`discovered_at`, `last_discovered_at`).
 
-### B. Inner Loop: Test Hypothesis & Builder Queue
-Once a page is discovered, the Planner generates **multiple** test hypotheses (typically 1–2 SMOKE tests and 3–5 FLOW journeys):
+### B. Inner Loop: Decoupled Action-Expectation Pipeline
+Once a page is discovered, the Planner generates **multiple** test hypotheses (typically 1–2 SMOKE tests and 3–5 FLOW journeys).
 
-- **Why a queue is required**:
-  - LLMs have finite output window limits and higher error rates when trying to generate 5 full Playwright test scripts in a single prompt.
-  - Generating one test at a time isolates errors: if 1 test fails linting or code generation, the remaining 4 tests are not aborted.
-  - Allows self-healing and deterministic selector attribution per test.
-- **Queue Dispatcher (`get_next_hypothesis`)**:
-  - Feeds one hypothesis `current_test` to `builder_node`.
-  - Upon writing and indexing the test, loops back until `test_queue` is exhausted.
+Instead of generating a monolithic test script with speculative, guessed assertions before executing:
+1. **`action_builder`**: Synthesizes an interaction-only `ActionSpec` with **zero assertions**.
+2. **`action_runner`**: Executes the action in Playwright. Any failure here is 100% an action defect (no assertions exist to fail).
+3. **`result_discovery`**: Computes a live `before → after` `DOMDelta` (added/removed elements, visible alerts, text changes, response codes).
+4. **`expectation_analysis`**: Evaluates `(Journey Intent, Pre-Action Discovery, ActionSpec, PostActionResult)`. Candidate signals are filtered through the **Journey Intent** ("Observed ≠ Expected"). Outputs assertions with confidence and evidence.
+5. **`correctness`**: Classifies outcome into 5 distinct verdicts (`CORRECT`, `ACTION_DEFECT`, `EXPECTATION_DEFECT`, `APP_BUG`, `INCONCLUSIVE`).
+6. **`testcase_assembler`**: Combines verified Action + verified Assertions + Provenance metadata into the final `.py` script. Persists to disk and PostgreSQL.
 
 ---
 
@@ -217,7 +227,7 @@ erDiagram
         string category "smoke / flow"
         string priority "high / medium / low"
         jsonb steps
-        text script_path "Location on disk"
+        text script_path "Supabase Storage path (e.g. forge/<domain>/tests/<test_id>/test.py)"
         text test_code "Playwright Python code"
         string status "active / paused"
         int cron_interval_hours

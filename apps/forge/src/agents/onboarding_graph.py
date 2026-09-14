@@ -9,35 +9,73 @@ from agents.nodes.understanding import understanding_node
 from agents.nodes.expectation import expectation_node
 from agents.nodes.planner import planner_node
 from agents.nodes.onboarding_scheduler import get_next_hypothesis_node
-from agents.nodes.builder import builder_node
+from agents.nodes.action_builder import action_builder_node
+from agents.nodes.action_runner import action_runner_node
+from agents.nodes.result_discovery import result_discovery_node
+from agents.nodes.expectation_analysis import expectation_analysis_node
+from agents.nodes.correctness import correctness_node
+from agents.nodes.heal_action import heal_action_node
+from agents.nodes.heal_expectation import heal_expectation_node
+from agents.nodes.testcase_assembler import testcase_assembler_node
 
 logger = logging.getLogger("forge.agent.onboarding_graph")
 
 
-def route_get_next_hypothesis(state: ForgeState) -> Literal["builder", "__end__"]:
+def route_get_next_hypothesis(state: ForgeState) -> Literal["action_builder", "__end__"]:
     """
     Checks if another planned test hypothesis is ready to be built:
-    - If current_test is present: route to 'builder'.
+    - If current_test is present: route to 'action_builder'.
     - If the hypothesis queue is exhausted: route to END.
     """
     if state.get("current_test"):
-        return "builder"
+        return "action_builder"
     return "__end__"
+
+
+def route_onboarding_action_runner(state: ForgeState) -> Literal["result_discovery", "heal_action", "get_next_hypothesis"]:
+    """Routes after action_runner during onboarding."""
+    action_result = state.get("action_result") or {}
+    if action_result.get("passed", False):
+        return "result_discovery"
+
+    heal_attempt = state.get("action_heal_attempt", 0)
+    max_heals = state.get("max_action_heals", 3)
+
+    if heal_attempt < max_heals:
+        return "heal_action"
+    return "get_next_hypothesis"
+
+
+def route_onboarding_correctness(state: ForgeState) -> Literal["assemble_testcase", "heal_action", "heal_expectation", "get_next_hypothesis"]:
+    """Routes after correctness evaluation during onboarding."""
+    verdict = state.get("correctness_verdict", "CORRECT")
+
+    if verdict == "CORRECT":
+        return "assemble_testcase"
+    elif verdict == "ACTION_DEFECT":
+        heal_attempt = state.get("action_heal_attempt", 0)
+        max_heals = state.get("max_action_heals", 3)
+        if heal_attempt < max_heals:
+            return "heal_action"
+        return "get_next_hypothesis"
+    elif verdict == "EXPECTATION_DEFECT":
+        exp_attempt = state.get("expectation_heal_attempt", 0)
+        max_exp_heals = state.get("max_expectation_heals", 2)
+        if exp_attempt < max_exp_heals:
+            return "heal_expectation"
+        return "get_next_hypothesis"
+    else:  # "APP_BUG" or "INCONCLUSIVE"
+        return "get_next_hypothesis"
 
 
 def create_onboarding_graph():
     """
-    Constructs and compiles the LangGraph StateGraph for Forge onboarding:
-    Discover -> Page Understanding -> Expectation -> Test Planner
-             -> [Get Next Hypothesis <-> Builder] -> END
-
-    Expectation turns raw discovery into a catalogue of assertions that are actually grounded
-    in the observed page (and states outright what a snapshot cannot know), so the planner and
-    builder assert real signals instead of inventing routes or elements.
-
-    The planner emits several SMOKE and FLOW test hypotheses (test_plan). Get Next Hypothesis
-    dispatches them to the builder one at a time and loops until every hypothesis has been
-    turned into a persisted, runnable test script.
+    Constructs and compiles the LangGraph StateGraph for Forge onboarding using the
+    Decoupled Action-Expectation Architecture:
+    Discover -> Page Understanding -> Expectation Grounding -> Planner
+             -> [Get Next Hypothesis -> Action Builder -> Action Runner
+                 -> Result Discovery -> Expectation Analysis -> Correctness
+                 -> Assemble Testcase -> Get Next Hypothesis] -> END
     """
     builder = StateGraph(ForgeState)
 
@@ -47,36 +85,71 @@ def create_onboarding_graph():
     builder.add_node("expectation", expectation_node)
     builder.add_node("planner", planner_node)
     builder.add_node("get_next_hypothesis", get_next_hypothesis_node)
-    builder.add_node("builder", builder_node)
+    builder.add_node("action_builder", action_builder_node)
+    builder.add_node("action_runner", action_runner_node)
+    builder.add_node("result_discovery", result_discovery_node)
+    builder.add_node("expectation_analysis", expectation_analysis_node)
+    builder.add_node("correctness", correctness_node)
+    builder.add_node("heal_action", heal_action_node)
+    builder.add_node("heal_expectation", heal_expectation_node)
+    builder.add_node("assemble_testcase", testcase_assembler_node)
 
-    # Add deterministic sequence edges
+    # Deterministic sequence edges
     builder.add_edge(START, "discover")
     builder.add_edge("discover", "understanding")
     builder.add_edge("understanding", "expectation")
     builder.add_edge("expectation", "planner")
     builder.add_edge("planner", "get_next_hypothesis")
 
-    # Dispatch loop: build every hypothesis in the plan, one at a time
+    # Hypothesis dispatch loop
     builder.add_conditional_edges(
         "get_next_hypothesis",
         route_get_next_hypothesis,
         {
-            "builder": "builder",
+            "action_builder": "action_builder",
             "__end__": END,
         },
     )
-    builder.add_edge("builder", "get_next_hypothesis")
+    builder.add_edge("action_builder", "action_runner")
+
+    # Action execution branching
+    builder.add_conditional_edges(
+        "action_runner",
+        route_onboarding_action_runner,
+        {
+            "result_discovery": "result_discovery",
+            "heal_action": "heal_action",
+            "get_next_hypothesis": "get_next_hypothesis",
+        },
+    )
+    builder.add_edge("heal_action", "action_runner")
+
+    # Result & expectation analysis
+    builder.add_edge("result_discovery", "expectation_analysis")
+    builder.add_edge("expectation_analysis", "correctness")
+
+    # Correctness branching
+    builder.add_conditional_edges(
+        "correctness",
+        route_onboarding_correctness,
+        {
+            "assemble_testcase": "assemble_testcase",
+            "heal_action": "heal_action",
+            "heal_expectation": "heal_expectation",
+            "get_next_hypothesis": "get_next_hypothesis",
+        },
+    )
+    builder.add_edge("heal_expectation", "correctness")
+
+    # When test is assembled, cycle back to get next hypothesis
+    builder.add_edge("assemble_testcase", "get_next_hypothesis")
 
     graph = builder.compile()
     return graph
 
 
 def run_onboarding_graph(state: Dict[str, Any]) -> None:
-    """
-    Executes the onboarding graph (discover -> understanding -> planner -> [build loop]) for
-    the given initial state (must include target_url). When state includes a website_id, progress
-    is published to that website's SSE event stream (used by the onboarding API's live log).
-    """
+    """Executes the onboarding graph for the given initial state."""
     from events import publish_event
 
     website_id = state.get("website_id")
@@ -98,15 +171,7 @@ def run_onboarding_graph_background(
     website_id: Optional[int] = None,
     storage_state_path: Optional[str] = None,
 ) -> None:
-    """
-    Fires the onboarding graph for `target_url` on a background thread and returns immediately.
-    Used when a passing test lands on a page that has never been onboarded (e.g. a login flow
-    reaching a dashboard) — coverage should extend to that page without blocking the test run
-    that discovered it.
-
-    `storage_state_path` carries the authenticated session the passing test saved just before
-    its browser closed. Pages behind a login are only reachable by reusing it.
-    """
+    """Fires onboarding graph in a background thread."""
     config: Dict[str, Any] = {}
     if storage_state_path:
         config["storage_state_path"] = storage_state_path

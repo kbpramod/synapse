@@ -1,477 +1,1425 @@
 import json
 import logging
-import re
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List
+
 from agents.llm import get_chat_model
 from agents.state import ForgeState, HealEvent
 from langchain_core.messages import SystemMessage, HumanMessage
 from db.repository import ForgeRepository
 
+
 logger = logging.getLogger("forge.agent.healer")
 
-HEALER_SYSTEM_PROMPT = """You are a Self-Healing Test Automation Specialist.
 
-A Playwright automated user journey test has failed. Your task is to diagnose the failure and
-produce a concrete, tactical repair plan that can be applied to the test script by the Editor.
+# ---------------------------------------------------------------------------
+# HEALER PROMPT
+# ---------------------------------------------------------------------------
+#
+# Keep this intentionally small.
+#
+# Deterministic code should provide facts.
+# The LLM should reason over those facts.
+#
+# IMPORTANT:
+# The healer is allowed to say "no_fix".
+# A healer that refuses to make an unsupported edit is behaving correctly.
+#
+HEALER_SYSTEM_PROMPT = """
+You are the Self-Healing Test Agent for a Playwright Python test.
 
-STRICT CONSTRAINTS & RULES:
-1. SYNCHRONOUS API ONLY:
-   The test suite strictly uses the Playwright Python Synchronous API (`from playwright.sync_api import sync_playwright, expect`).
-   NEVER introduce `async`, `await`, or asyncio into the repair plan! All Playwright calls must remain synchronous.
+A test has failed. Your job is to determine whether the TEST CODE is
+responsible for the failure and, ONLY when the evidence is strong enough,
+propose the smallest possible repair.
 
-2. RESPONSIVE VARIANT & HIDDEN ELEMENTS:
-   If an element is reported hidden (e.g. 'locator resolved to hidden element'), check if this is a responsive layout difference.
-   For example, if testing mobile viewport and the target link is in a collapsed menu, plan to click the visible mobile menu toggle first, or use the locator corresponding to the visible variant.
+You are a reasoning agent, not a test-rewrite agent.
 
-3. GROUNDED LOCATORS & ACTIONS (IMMUTABLE TECHNICAL EVIDENCE):
-   - CRITICAL ARCHITECTURAL RULE: Locators discovered from the DOM are exact technical evidence.
-   - NEVER spell-correct, normalize, or semantically rewrite them during agent-to-agent transfer.
-     * Example: If discovery found `#susbscribe_email`, preserve EXACTLY `#susbscribe_email`. NEVER diagnose it as a typo or rewrite it to `#subscribe_email`.
-     * Example: If discovery found `<button id="subscribe">`, instruct the Editor to use `page.locator("#subscribe")`. Do NOT recommend `get_by_role("button", name=...)` if the button lacks visible text (e.g. icon buttons).
-   - When diagnosing a failed `get_by_role(...)` or `get_by_text(...)`, check if a button with an ID or CSS selector exists in `available_elements_in_dom` (e.g. `#subscribe`). Recommend targeting that exact ID selector (`page.locator("#...")`) with `.scroll_into_view_if_needed()`.
-   - Every selector or ID you recommend MUST come directly from `available_elements_in_dom`. NEVER invent hypothetical selectors.
+EVIDENCE PRIORITY
+1. Runtime exception / stack trace
+2. Exact failed operation
+3. Failure URL
+4. DOM discovered at the failure location
+5. Test source
+6. Other telemetry
 
-4. AVOID INVENTED DESTINATION PATHS:
-   Never instruct the test to assert a hardcoded redirect route unless that route is explicitly present in the application's discovered links.
-   If asserting that an action succeeded without a known route, instruct the Editor to verify:
-   a) the previous page/element disappeared, or
-   b) an authenticated indicator appeared, or
-   c) `page.url != start_url`.
+CORE RULES
 
-5. AUTHENTICATION REDIRECTS vs EXPECTED JOURNEY NAVIGATION (CRITICAL):
-   - Forward navigation to content pages (e.g. from starting page '/' to '/contact_us', '/products', '/cart') is EXPECTED user journey progression.
-   - Do NOT classify expected forward navigation as an authentication redirect!
-   - ONLY diagnose an authentication requirement when `navigation.auth_redirect` is True (e.g., unexpected redirect to '/login' or '/users/sign_in') OR when visible error banners explicitly demand authentication ('You can only access... when logged in', 'Sign in required').
-   - If an auth redirect is genuinely detected:
-     * Classify failure_class as "automation_defect".
-     * If `storage_state_available` is provided: instruct the Editor to load `browser.new_context(storage_state=...)`.
-     * If NO storage_state is available: instruct the Editor to use `available_accounts` to perform login steps FIRST before accessing the target route.
+1. Treat deterministic telemetry as FACT.
+   Do not reinterpret it.
 
-6. REPAIR OUTPUT FORMAT:
-   Structure your repair plan clearly:
+2. Do not assume that a different URL means an authentication redirect.
+   Use navigation.auth_redirect exactly as supplied.
 
-1. Failure Class:
-   Exactly one of:
-   - "wrong_expectation": the test asserts something this application does not do/have.
-     The assertion must be replaced or removed.
-   - "automation_defect": the expectation is valid and observable, but the script reaches it
-     incorrectly (bad selector, missing step, real race condition, code error).
+3. Do not invent selectors, URLs, elements, application behavior,
+   or error messages.
 
-2. Diagnosis:
-   Identify the most likely root cause using the actual error, the test code, and whether the
-   asserted target appears in the discovered elements.
+4. A selector may only be recommended if that selector is present in
+   the supplied DOM discovery data.
 
-3. Fix Plan:
-   Describe exactly what the Editor should change. When failure_class is "wrong_expectation",
-   state explicitly which assertion to delete and what grounded assertion replaces it.
+5. Do not change code merely because another locator exists.
+   There must be evidence that the existing code caused the failure.
 
-4. Preserve:
-   Identify existing test behavior that should not be changed. Never list a broken assertion
-   as something to preserve.
+6. Do not change working steps or assertions without evidence.
 
-Return strictly JSON:
+7. Prefer the smallest possible repair.
+
+8. Check previous healing attempts.
+   Do not recommend the same unsuccessful fix again.
+
+9. If the evidence is contradictory, incomplete, or insufficient,
+   return action="no_fix".
+
+10. "no_fix" is a valid and successful outcome.
+    Never invent a diagnosis simply because the test failed.
+
+Before proposing a fix, establish:
+
+- What exact operation failed?
+- What evidence identifies that operation?
+- Does the discovered DOM support the proposed replacement?
+- Would the proposed change directly address the failure?
+- Has the same fix already been attempted?
+
+If any of these cannot be answered confidently, return "no_fix".
+
+FAILURE CLASS
+
+Use:
+- "automation_defect"
+    The test code is likely wrong: bad locator, incorrect interaction,
+    missing automation step, timing/code problem, etc.
+
+- "wrong_expectation"
+    The test expects behavior that the evidence shows the application
+    does not provide.
+
+- "unknown"
+    The evidence is insufficient to confidently classify the failure.
+
+OUTPUT
+
+Return ONLY valid JSON:
+
 {
-  "failure_class": "wrong_expectation" | "automation_defect",
-  "diagnosis": "Detailed root-cause diagnosis",
-  "fix_plan": "Specific tactical steps to repair the test",
+  "action": "fix" | "no_fix",
+  "failure_class": "automation_defect" | "wrong_expectation" | "unknown",
+  "diagnosis": "Concise evidence-based diagnosis",
+  "evidence": [
+    "Specific evidence supporting the diagnosis"
+  ],
+  "confidence": 0.0,
+  "fix_plan": "Smallest concrete repair, or empty string when no_fix",
   "preserve": "Existing behavior that must remain unchanged"
 }
 
-Output ONLY valid JSON.
+The confidence value must be between 0.0 and 1.0.
+
+Do not output markdown.
+Do not output explanations outside the JSON object.
 """
 
 
-def healer_node(state: ForgeState) -> Dict[str, Any]:
+# ---------------------------------------------------------------------------
+# HELPERS
+# ---------------------------------------------------------------------------
+
+def _safe_text(value: Any) -> str:
+    """Convert arbitrary values to a safe short string."""
+    if value is None:
+        return ""
+    if isinstance(value, str):
+        return value
+    try:
+        return json.dumps(value, default=str)
+    except Exception:
+        return str(value)
+
+
+def _normalize_url(url: str) -> str:
+    """Normalize URL only for comparison/logging."""
+    if not url:
+        return ""
+    return url.rstrip("/")
+
+
+def _load_discovery(
+    discovery_url: str,
+    target_url: str,
+) -> tuple[Dict[str, Any], str]:
     """
-    HEAL node: Diagnoses the failure, formulates a repair plan,
-    increments the heal attempt counter, and prepares context for the Test Builder.
+    Recover discovery data.
+
+    Priority:
+      1. Current state is handled by caller.
+      2. Disk cache.
+      3. Database.
+
+    Returns:
+        (discovery_data, source_description)
     """
-    current_test = state.get("current_test") or {}
-    heal_attempt = state.get("heal_attempt", 0)
-    healing_history = list(state.get("healing_history", []))
-    exec_res = state.get("execution_result") or {}
-    analysis = state.get("analysis") or {}
-    target_url = state.get("target_url") or current_test.get("page_url") or current_test.get("target_url") or ""
-    test_id = current_test.get("id") or current_test.get("test_id") or "unknown_test"
+    disc: Dict[str, Any] = {}
+    source = "missing"
 
-    logger.info("=" * 70)
-    logger.info(f"[HEAL] >>> ENTERING HEALER NODE for '{test_id}' (Attempt #{heal_attempt + 1}) <<<")
-    logger.info("=" * 70)
+    # ------------------------------------------------------------------
+    # Disk
+    # ------------------------------------------------------------------
+    try:
+        from storage.local import (
+            get_discovery_storage_dir,
+            get_page_folder,
+        )
 
-    # ---------------------------------------------------------
-    # 1. DISCOVERY DATA RECOVERY & INSPECTION
-    # ---------------------------------------------------------
-    disc = state.get("discovery_data") or {}
-    disc_source = "state.discovery_data" if disc else "missing"
+        lookup_urls = []
 
-    f_ctx = state.get("failure_context") or {}
-    discovery_target_url = f_ctx.get("discovery_url") or exec_res.get("failure_url") or target_url
+        if discovery_url:
+            lookup_urls.append(discovery_url)
 
-    # Fallback: check disk cache
-    if not disc or not disc.get("elements"):
-        try:
-            from storage.local import get_discovery_storage_dir, get_page_folder
-            for lookup_url in (discovery_target_url, target_url):
-                if not lookup_url:
-                    continue
-                disc_file = get_discovery_storage_dir(lookup_url) / "discovery.json"
+        if target_url and target_url not in lookup_urls:
+            lookup_urls.append(target_url)
+
+        for lookup_url in lookup_urls:
+            try:
+                disc_file = (
+                    get_discovery_storage_dir(lookup_url)
+                    / "discovery.json"
+                )
+
                 if disc_file.exists():
                     with open(disc_file, "r", encoding="utf-8") as f:
                         disc = json.load(f)
-                        disc_source = f"discovery disk cache ({disc_file})"
-                        break
+
+                    if disc:
+                        return disc, f"discovery disk cache ({disc_file})"
+
                 page_file = get_page_folder(lookup_url) / "index.json"
+
                 if page_file.exists():
                     with open(page_file, "r", encoding="utf-8") as f:
                         disc = json.load(f)
-                        disc_source = f"page disk cache ({page_file})"
-                        break
-        except Exception as disk_err:
-            logger.debug(f"[HEAL:DISCOVERY] Could not load from disk: {disk_err}")
 
-    # Fallback: check PostgreSQL repository
-    if not disc or not disc.get("elements"):
-        try:
-            for lookup_url in (discovery_target_url, target_url):
-                if not lookup_url:
-                    continue
+                    if disc:
+                        return disc, f"page disk cache ({page_file})"
+
+            except Exception as exc:
+                logger.debug(
+                    "[HEAL:DISCOVERY] Failed disk lookup for %s: %s",
+                    lookup_url,
+                    exc,
+                )
+
+    except Exception as exc:
+        logger.debug(
+            "[HEAL:DISCOVERY] Disk discovery unavailable: %s",
+            exc,
+        )
+
+    # ------------------------------------------------------------------
+    # Database
+    # ------------------------------------------------------------------
+    try:
+        lookup_urls = []
+
+        if discovery_url:
+            lookup_urls.append(discovery_url)
+
+        if target_url and target_url not in lookup_urls:
+            lookup_urls.append(target_url)
+
+        for lookup_url in lookup_urls:
+            try:
                 page_rec = ForgeRepository.get_page_by_url(lookup_url)
+
                 if page_rec and page_rec.get("metadata_json"):
                     disc = page_rec["metadata_json"]
-                    disc_source = f"database (forge.pages for {lookup_url})"
-                    break
-        except Exception as db_err:
-            logger.debug(f"[HEAL:DISCOVERY] Could not load from db: {db_err}")
 
-    # Extract discovery elements & metadata
-    disc_page = disc.get("page") or {}
-    disc_url = disc_page.get("url") or disc.get("url") or ""
-    disc_title = disc_page.get("title") or disc.get("title") or ""
+                    if disc:
+                        return (
+                            disc,
+                            f"database (forge.pages for {lookup_url})",
+                        )
 
-    raw_elements = disc.get("elements") or {}
-    raw_buttons = raw_elements.get("buttons") or []
-    raw_inputs = raw_elements.get("inputs") or []
-    raw_links = raw_elements.get("links") or []
-    raw_selects = raw_elements.get("selects") or []
-    raw_forms = raw_elements.get("forms") or []
-    raw_headings = (disc.get("text") or {}).get("headings") or raw_elements.get("headings") or []
-    body_text_preview = ((disc.get("text") or {}).get("body_text_preview") or "")[:400]
+            except Exception as exc:
+                logger.debug(
+                    "[HEAL:DISCOVERY] Database lookup failed for %s: %s",
+                    lookup_url,
+                    exc,
+                )
 
-    logger.info(f"[HEAL:DISCOVERY] Source of discovery data: {disc_source}")
-    logger.info(f"[HEAL:DISCOVERY] Snapshot URL   : '{disc_url}' (Target URL: '{target_url}')")
-    logger.info(f"[HEAL:DISCOVERY] Snapshot Title : '{disc_title}'")
-    logger.info(
-        f"[HEAL:DISCOVERY] Raw Elements Discovered: "
-        f"Buttons={len(raw_buttons)}, Inputs={len(raw_inputs)}, "
-        f"Links={len(raw_links)}, Selects={len(raw_selects)}, "
-        f"Forms={len(raw_elements.get('forms', []))}, "
-        f"Headings={len(raw_elements.get('headings', []))}"
-    )
-
-    if disc_url and target_url and disc_url.rstrip("/") != target_url.rstrip("/"):
-        logger.warning(
-            f"[HEAL:DISCOVERY] URL MISMATCH! Discovery snapshot was taken on '{disc_url}', "
-            f"but test target is '{target_url}'. "
-            f"This often indicates a redirect during discovery (e.g. auth redirect to login)."
+    except Exception as exc:
+        logger.debug(
+            "[HEAL:DISCOVERY] Database discovery unavailable: %s",
+            exc,
         )
 
-    # ---------------------------------------------------------
-    # 2. LOCATOR / FAILURE DIAGNOSIS AGAINST DISCOVERY ELEMENTS
-    # ---------------------------------------------------------
-    error_summary = exec_res.get("error_summary") or ""
-    stderr = exec_res.get("stderr") or ""
-    full_error_text = f"{error_summary} {stderr}"
+    return {}, source
 
-    targeted_selector = None
-    targeted_keywords = []
 
-    # 1. Direct locator/click/fill/select_option matches
-    selector_match = re.search(r'''(?:locator|wait_for_selector|click|fill|select_option)\s*\(\s*['"]([^'"]+)['"]''', full_error_text)
-    if selector_match:
-        targeted_selector = selector_match.group(1)
-        targeted_keywords.append(targeted_selector.lower())
+def _extract_elements(
+    discovery_data: Dict[str, Any],
+) -> Dict[str, List[Dict[str, Any]]]:
+    """Extract raw DOM discovery collections."""
+    raw_elements = discovery_data.get("elements") or {}
 
-    # 2. get_by_role / get_by_text matches
-    role_match = re.search(r'''get_by_role\s*\(\s*['"](\w+)['"](?:,\s*name=(?:re\.compile\([rR]?['"]([^'"]+)['"]|['"]([^'"]+)['"]))?''', full_error_text)
-    if role_match:
-        kw = role_match.group(2) or role_match.group(3)
-        if kw:
-            targeted_keywords.append(kw.lower())
-
-    text_match = re.search(r'''get_by_text\s*\(\s*['"]([^'"]+)['"]''', full_error_text)
-    if text_match:
-        targeted_keywords.append(text_match.group(1).lower())
-
-    # 3. Hash IDs in error messages
-    for hash_m in re.findall(r'(#[\w\-]+)', full_error_text):
-        targeted_keywords.append(hash_m.lower())
-        if not targeted_selector:
-            targeted_selector = hash_m
-
-    # 4. Context keywords from current test
-    scenario_kw = re.findall(r'[a-zA-Z0-9_\-#]+', f"{current_test.get('id', '')} {current_test.get('title', '')} {' '.join(current_test.get('steps', []))}".lower())
-    targeted_keywords.extend([k for k in scenario_kw if len(k) >= 4])
-
-    if targeted_selector:
-        in_buttons = [b for b in raw_buttons if targeted_selector in (b.get("selector") or "") or targeted_selector in (b.get("id") or "") or targeted_selector in (b.get("text") or "")]
-        in_inputs = [i for i in raw_inputs if targeted_selector in (i.get("selector") or "") or targeted_selector in (i.get("id") or "") or targeted_selector in (i.get("name") or "")]
-        in_links = [l for l in raw_links if targeted_selector in (l.get("selector") or "") or targeted_selector in (l.get("id") or "") or targeted_selector in (l.get("text") or "")]
-
-        if in_buttons or in_inputs or in_links:
-            logger.info(
-                f"[HEAL:LOCATOR_MATCH] Target '{targeted_selector}' WAS OBSERVED in discovery: "
-                f"Buttons={len(in_buttons)}, Inputs={len(in_inputs)}, Links={len(in_links)}"
-            )
-        else:
-            logger.warning(
-                f"[HEAL:LOCATOR_MATCH] Target '{targeted_selector}' was NOT OBSERVED in discovery snapshot of '{disc_url}'! "
-                f"Reason: The element was never rendered on that page, or the browser landed on a different route."
-            )
-
-    # ---------------------------------------------------------
-    # 3. BUILD FILTERED DOM ELEMENTS FOR LLM (RELEVANCE RANKED)
-    # ---------------------------------------------------------
-    def _rank_elements(elements_list: list, max_items: int) -> list:
-        scored = []
-        for el in elements_list:
-            score = 0
-            el_text = f"{el.get('selector', '')} {el.get('id', '')} {el.get('name', '')} {el.get('text', '')} {el.get('placeholder', '')} {el.get('forge_id', '')}".lower()
-            for kw in targeted_keywords:
-                if kw in el_text:
-                    score += 2
-            if el.get("id"):
-                score += 1
-            scored.append((score, el))
-        scored.sort(key=lambda item: item[0], reverse=True)
-        return [item[1] for item in scored[:max_items]]
-
-    MAX_BUTTONS, MAX_INPUTS, MAX_LINKS, MAX_SELECTS = 35, 25, 30, 10
-    sliced_buttons = _rank_elements(raw_buttons, MAX_BUTTONS)
-    sliced_inputs = _rank_elements(raw_inputs, MAX_INPUTS)
-    sliced_links = _rank_elements(raw_links, MAX_LINKS)
-    sliced_selects = raw_selects[:MAX_SELECTS]
-
-    available_elements = {
-        "buttons": [
-            {
-                "text": b.get("text"),
-                "selector": b.get("selector"),
-                "id": b.get("id"),
-                "forge_id": b.get("forge_id"),
-                "role": b.get("role"),
-                "aria_label": b.get("aria_label"),
-            }
-            for b in sliced_buttons
-        ],
-        "inputs": [
-            {
-                "name": i.get("name"),
-                "placeholder": i.get("placeholder"),
-                "selector": i.get("selector"),
-                "id": i.get("id"),
-                "forge_id": i.get("forge_id"),
-                "type": i.get("type"),
-                "label": i.get("label"),
-            }
-            for i in sliced_inputs
-        ],
-        "links": [
-            {
-                "text": l.get("text"),
-                "selector": l.get("selector"),
-                "id": l.get("id"),
-                "forge_id": l.get("forge_id"),
-                "href": l.get("href"),
-            }
-            for l in sliced_links
-        ],
-        "selects": [
-            {
-                "name": s.get("name"),
-                "selector": s.get("selector"),
-                "id": s.get("id"),
-                "forge_id": s.get("forge_id"),
-                "options": [o.get("text") for o in s.get("options", [])][:5],
-            }
-            for s in sliced_selects
-        ],
+    return {
+        "buttons": raw_elements.get("buttons") or [],
+        "inputs": raw_elements.get("inputs") or [],
+        "links": raw_elements.get("links") or [],
+        "selects": raw_elements.get("selects") or [],
+        "forms": raw_elements.get("forms") or [],
     }
 
-    logger.info(
-        f"[HEAL:ELEMENTS_FEED] Included in Healer prompt: "
-        f"{len(available_elements['buttons'])}/{len(raw_buttons)} buttons, "
-        f"{len(available_elements['inputs'])}/{len(raw_inputs)} inputs, "
-        f"{len(available_elements['links'])}/{len(raw_links)} links, "
-        f"{len(available_elements['selects'])}/{len(raw_selects)} selects."
+
+def _element_text(element: Dict[str, Any]) -> str:
+    """Create a searchable representation of one discovered element."""
+    fields = (
+        "selector",
+        "id",
+        "name",
+        "text",
+        "placeholder",
+        "forge_id",
+        "role",
+        "aria_label",
+        "href",
+        "type",
     )
-    if len(raw_buttons) > MAX_BUTTONS or len(raw_links) > MAX_LINKS:
-        logger.info(
-            f"[HEAL:ELEMENTS_FEED:OMITTED] "
-            f"Omitted {max(0, len(raw_buttons) - MAX_BUTTONS)} buttons and "
-            f"{max(0, len(raw_links) - MAX_LINKS)} links to protect LLM context limits."
+
+    return " ".join(
+        str(element.get(field) or "")
+        for field in fields
+    ).lower()
+
+
+def _extract_failure_evidence(
+    execution_result: Dict[str, Any],
+) -> Dict[str, Any]:
+    """
+    Extract the most useful failure information.
+
+    This is deliberately conservative.
+    We do not attempt to infer a diagnosis here.
+    """
+    error_summary = execution_result.get("error_summary") or ""
+    stderr = execution_result.get("stderr") or ""
+
+    return {
+        "error_summary": error_summary,
+        "stderr": stderr[-4000:],
+        "exception": execution_result.get("exception"),
+        "failure_url": execution_result.get("failure_url"),
+        "exit_code": execution_result.get("exit_code"),
+        "passed": execution_result.get("passed"),
+    }
+
+
+def _build_dom_for_llm(
+    raw_elements: Dict[str, List[Dict[str, Any]]],
+    failure_evidence: Dict[str, Any],
+    max_buttons: int = 40,
+    max_inputs: int = 25,
+    max_links: int = 50,
+    max_selects: int = 10,
+) -> Dict[str, List[Dict[str, Any]]]:
+    """
+    Prepare DOM evidence for the LLM.
+
+    Unlike the previous implementation, this does NOT rank elements
+    using the test title/scenario keywords.
+
+    We keep the DOM grounded and predictable.
+    """
+
+    def simplify(
+        element: Dict[str, Any],
+        fields: List[str],
+    ) -> Dict[str, Any]:
+        return {
+            field: element.get(field)
+            for field in fields
+            if element.get(field) is not None
+        }
+
+    # ------------------------------------------------------------------
+    # If the runtime error contains a literal selector/text, put matching
+    # elements first. This is evidence-based ranking.
+    # ------------------------------------------------------------------
+    error_text = " ".join(
+        [
+            _safe_text(failure_evidence.get("error_summary")),
+            _safe_text(failure_evidence.get("stderr")),
+        ]
+    ).lower()
+
+    def relevance_score(element: Dict[str, Any]) -> int:
+        searchable = _element_text(element)
+
+        score = 0
+
+        # Only exact fragments already present in the error are considered.
+        for token in (
+            element.get("selector"),
+            element.get("id"),
+            element.get("name"),
+            element.get("text"),
+            element.get("href"),
+        ):
+            if token and str(token).lower() in error_text:
+                score += 10
+
+        # Don't invent semantic relevance.
+        if searchable and searchable in error_text:
+            score += 5
+
+        return score
+
+    def prepare(
+        elements: List[Dict[str, Any]],
+        limit: int,
+        fields: List[str],
+    ) -> List[Dict[str, Any]]:
+        ranked = sorted(
+            elements,
+            key=relevance_score,
+            reverse=True,
         )
 
-    # Detailed sample of elements going to healer
-    sample_btns = [b.get("selector") or b.get("text") or b.get("id") for b in available_elements["buttons"][:10]]
-    sample_inps = [i.get("selector") or i.get("name") or i.get("placeholder") for i in available_elements["inputs"][:10]]
-    logger.info(f"[HEAL:ELEMENTS_FEED] Buttons passed to Healer: {sample_btns}")
-    logger.info(f"[HEAL:ELEMENTS_FEED] Inputs passed to Healer: {sample_inps}")
+        return [
+            simplify(element, fields)
+            for element in ranked[:limit]
+        ]
 
-    # ---------------------------------------------------------
-    # 4. TELEMETRY & RUNTIME STATE
-    # ---------------------------------------------------------
-    code_to_heal = state.get("test_code") or ""
+    return {
+        "buttons": prepare(
+            raw_elements["buttons"],
+            max_buttons,
+            [
+                "text",
+                "selector",
+                "id",
+                "forge_id",
+                "role",
+                "aria_label",
+            ],
+        ),
+        "inputs": prepare(
+            raw_elements["inputs"],
+            max_inputs,
+            [
+                "name",
+                "placeholder",
+                "selector",
+                "id",
+                "forge_id",
+                "type",
+                "label",
+            ],
+        ),
+        "links": prepare(
+            raw_elements["links"],
+            max_links,
+            [
+                "text",
+                "selector",
+                "id",
+                "forge_id",
+                "href",
+                "role",
+                "aria_label",
+            ],
+        ),
+        "selects": prepare(
+            raw_elements["selects"],
+            max_selects,
+            [
+                "name",
+                "selector",
+                "id",
+                "forge_id",
+                "options",
+            ],
+        ),
+    }
+
+
+def _selector_exists_in_dom(
+    fix_plan: str,
+    available_elements: Dict[str, List[Dict[str, Any]]],
+) -> bool:
+    """
+    Conservative grounding check.
+
+    If the proposed fix explicitly mentions a selector that looks like
+    a CSS selector, verify that it occurs in discovery.
+
+    This is not intended to understand every possible LLM sentence.
+    It is a safety guard against obvious invented selectors.
+    """
+
+    if not fix_plan:
+        return True
+
+    selectors = set()
+
+    for collection in available_elements.values():
+        for element in collection:
+            selector = element.get("selector")
+            element_id = element.get("id")
+            href = element.get("href")
+
+            if selector:
+                selectors.add(str(selector))
+
+            if element_id:
+                selectors.add(f"#{element_id}")
+
+            if href:
+                selectors.add(str(href))
+
+    # Extract common CSS-like strings from the proposed plan.
+    candidates = []
+
+    # #foo
+    import re
+
+    candidates.extend(
+        re.findall(r"#[A-Za-z0-9_-]+", fix_plan)
+    )
+
+    # [href="..."], [name="..."], etc.
+    candidates.extend(
+        re.findall(r"\[[^\]]+\]", fix_plan)
+    )
+
+    # locator("...")
+    candidates.extend(
+        re.findall(
+            r"""(?:locator|get_by_text|get_by_role|get_by_label|get_by_placeholder)
+                \(\s*['"]([^'"]+)['"]""",
+            fix_plan,
+            flags=re.IGNORECASE | re.VERBOSE,
+        )
+    )
+
+    for candidate in candidates:
+        candidate = candidate.strip()
+
+        if not candidate:
+            continue
+
+        if candidate in selectors:
+            continue
+
+        # get_by_text("foo") may not correspond to a CSS selector.
+        # Check whether exact visible text exists.
+        if any(
+            candidate == str(element.get("text") or "")
+            for collection in available_elements.values()
+            for element in collection
+        ):
+            continue
+
+        # If it looks like a CSS selector and wasn't discovered,
+        # reject it.
+        looks_like_selector = (
+            candidate.startswith("#")
+            or candidate.startswith(".")
+            or candidate.startswith("[")
+            or candidate.startswith("/")
+            or ">" in candidate
+            or "*" in candidate
+        )
+
+        if looks_like_selector:
+            return False
+
+    return True
+
+
+def _previous_fix_already_attempted(
+    fix_plan: str,
+    healing_history: List[Dict[str, Any]],
+) -> bool:
+    """Detect obvious repeated fixes."""
+    if not fix_plan:
+        return False
+
+    normalized = " ".join(fix_plan.lower().split())
+
+    for event in healing_history[-5:]:
+        previous = " ".join(
+            str(event.get("fix_plan") or "").lower().split()
+        )
+
+        if previous and previous == normalized:
+            return True
+
+    return False
+
+
+def _safe_no_fix(
+    *,
+    diagnosis: str,
+    evidence: List[str],
+    preserve: str = "Do not modify the test until stronger evidence is available.",
+) -> Dict[str, Any]:
+    """Return a conservative no-fix result."""
+    return {
+        "action": "no_fix",
+        "failure_class": "unknown",
+        "diagnosis": diagnosis,
+        "evidence": evidence,
+        "confidence": 0.0,
+        "fix_plan": "",
+        "preserve": preserve,
+    }
+
+
+def _parse_llm_result(content: str) -> Dict[str, Any]:
+    """Parse and minimally validate the LLM JSON."""
+    content = content.strip()
+
+    if content.startswith("```"):
+        lines = content.splitlines()
+
+        if lines and lines[0].startswith("```"):
+            lines = lines[1:]
+
+        if lines and lines[-1].startswith("```"):
+            lines = lines[:-1]
+
+        content = "\n".join(lines).strip()
+
+    result = json.loads(content)
+
+    if not isinstance(result, dict):
+        raise ValueError("Healer response is not a JSON object")
+
+    action = str(result.get("action") or "").strip().lower()
+
+    if action not in ("fix", "no_fix"):
+        raise ValueError(
+            f"Invalid healer action: {action!r}"
+        )
+
+    failure_class = str(
+        result.get("failure_class") or "unknown"
+    ).strip().lower()
+
+    if failure_class not in (
+        "automation_defect",
+        "wrong_expectation",
+        "unknown",
+    ):
+        failure_class = "unknown"
+
+    try:
+        confidence = float(result.get("confidence", 0.0))
+    except Exception:
+        confidence = 0.0
+
+    confidence = max(0.0, min(1.0, confidence))
+
+    evidence = result.get("evidence") or []
+
+    if isinstance(evidence, str):
+        evidence = [evidence]
+
+    if not isinstance(evidence, list):
+        evidence = [str(evidence)]
+
+    return {
+        "action": action,
+        "failure_class": failure_class,
+        "diagnosis": str(
+            result.get("diagnosis") or ""
+        ).strip(),
+        "evidence": [
+            str(item)
+            for item in evidence
+            if item is not None
+        ],
+        "confidence": confidence,
+        "fix_plan": str(
+            result.get("fix_plan") or ""
+        ).strip(),
+        "preserve": str(
+            result.get("preserve") or ""
+        ).strip(),
+    }
+
+
+# ---------------------------------------------------------------------------
+# MAIN HEALER NODE
+# ---------------------------------------------------------------------------
+
+def healer_node(state: ForgeState) -> Dict[str, Any]:
+    """
+    Diagnose a failed test and produce an evidence-grounded healing plan.
+
+    Important design rule:
+        The Healer does NOT have to produce a fix.
+
+    It may return:
+        action = "fix"
+    or:
+        action = "no_fix"
+
+    The rest of the pipeline should respect that decision.
+    """
+
+    current_test = state.get("current_test") or {}
+    heal_attempt = state.get("heal_attempt", 0)
+    healing_history = list(
+        state.get("healing_history", [])
+    )
+
+    execution_result = (
+        state.get("execution_result") or {}
+    )
+
+    analysis = state.get("analysis") or {}
+    failure_context = (
+        state.get("failure_context") or {}
+    )
+
+    target_url = (
+        state.get("target_url")
+        or current_test.get("page_url")
+        or current_test.get("target_url")
+        or ""
+    )
+
+    test_id = (
+        current_test.get("id")
+        or current_test.get("test_id")
+        or "unknown_test"
+    )
+
+    logger.info("=" * 70)
+    logger.info(
+        "[HEAL] >>> ENTERING HEALER NODE for '%s' "
+        "(Attempt #%s) <<<",
+        test_id,
+        heal_attempt + 1,
+    )
+    logger.info("=" * 70)
+
+    # ------------------------------------------------------------------
+    # 1. FAILURE / NAVIGATION FACTS
+    # ------------------------------------------------------------------
+
+    failure_url = (
+        execution_result.get("failure_url")
+        or failure_context.get("failure_url")
+        or ""
+    )
+
+    navigation = (
+        failure_context.get("navigation")
+        or {}
+    )
+
+    # These are FACTS from upstream.
+    # Do not infer them again inside the LLM.
+    auth_redirect = bool(
+        navigation.get("auth_redirect", False)
+    )
+
+    expected_navigation = bool(
+        navigation.get("expected", True)
+    )
+
+    discovery_url = (
+        failure_context.get("discovery_url")
+        or failure_url
+        or target_url
+    )
+
+    # ------------------------------------------------------------------
+    # 2. DISCOVERY
+    # ------------------------------------------------------------------
+
+    discovery_data = (
+        state.get("discovery_data") or {}
+    )
+
+    discovery_source = (
+        "state.discovery_data"
+        if discovery_data
+        else "missing"
+    )
+
+    if not discovery_data or not discovery_data.get("elements"):
+        discovery_data, discovery_source = _load_discovery(
+            discovery_url,
+            target_url,
+        )
+
+    discovery_page = (
+        discovery_data.get("page") or {}
+    )
+
+    discovery_snapshot_url = (
+        discovery_page.get("url")
+        or discovery_data.get("url")
+        or discovery_url
+        or ""
+    )
+
+    discovery_title = (
+        discovery_page.get("title")
+        or discovery_data.get("title")
+        or ""
+    )
+
+    raw_elements = _extract_elements(
+        discovery_data
+    )
+
+    body_text_preview = (
+        (discovery_data.get("text") or {})
+        .get("body_text_preview")
+        or ""
+    )[:600]
+
+    headings = (
+        (discovery_data.get("text") or {})
+        .get("headings")
+        or discovery_data.get("headings")
+        or []
+    )
+
+    page_headings = [
+        h.get("text")
+        if isinstance(h, dict)
+        else str(h)
+        for h in headings[:10]
+    ]
+
+    logger.info(
+        "[HEAL:DISCOVERY] Source: %s",
+        discovery_source,
+    )
+
+    logger.info(
+        "[HEAL:DISCOVERY] Snapshot URL: '%s'",
+        discovery_snapshot_url,
+    )
+
+    logger.info(
+        "[HEAL:DISCOVERY] Snapshot Title: '%s'",
+        discovery_title,
+    )
+
+    logger.info(
+        "[HEAL:DISCOVERY] Elements: "
+        "buttons=%d inputs=%d links=%d selects=%d forms=%d",
+        len(raw_elements["buttons"]),
+        len(raw_elements["inputs"]),
+        len(raw_elements["links"]),
+        len(raw_elements["selects"]),
+        len(raw_elements["forms"]),
+    )
+
+    # IMPORTANT:
+    # Do NOT emit "URL MISMATCH = redirect".
+    #
+    # The discovery page is allowed to be the failure destination.
+    #
+    if (
+        discovery_snapshot_url
+        and discovery_url
+        and _normalize_url(discovery_snapshot_url)
+        != _normalize_url(discovery_url)
+    ):
+        logger.info(
+            "[HEAL:DISCOVERY] Snapshot URL differs from requested "
+            "discovery URL: '%s' -> '%s'",
+            discovery_url,
+            discovery_snapshot_url,
+        )
+
+    # ------------------------------------------------------------------
+    # 3. FAILURE EVIDENCE
+    # ------------------------------------------------------------------
+
+    failure_evidence = _extract_failure_evidence(
+        execution_result
+    )
+
+    visible_errors = (
+        execution_result.get("visible_errors")
+        or failure_context.get("visible_errors")
+        or []
+    )
+
+    logger.info(
+        "[HEAL:EVIDENCE] Error Summary: '%s'",
+        failure_evidence["error_summary"],
+    )
+
+    logger.info(
+        "[HEAL:EVIDENCE] Failure URL: '%s'",
+        failure_url,
+    )
+
+    logger.info(
+        "[HEAL:EVIDENCE] Auth Redirect: %s | Expected Navigation: %s",
+        auth_redirect,
+        expected_navigation,
+    )
+
+    logger.info(
+        "[HEAL:EVIDENCE] Visible Errors: %s",
+        visible_errors,
+    )
+
+    # ------------------------------------------------------------------
+    # 4. PREPARE TEST CODE (ALWAYS ACTIVE CURRENT VERSION)
+    # ------------------------------------------------------------------
+
     test_file_path = state.get("test_file_path")
-    if not code_to_heal and test_file_path and Path(test_file_path).exists():
+    test_code = ""
+
+    # PRIMARY SOURCE OF TRUTH: Always read the exact active test script from disk
+    # that Runner just executed. Never reason over a stale or pre-edit version.
+    if test_file_path and Path(test_file_path).exists():
         try:
             with open(test_file_path, "r", encoding="utf-8") as f:
-                code_to_heal = f.read()
-        except Exception:
-            pass
+                test_code = f.read()
+            logger.info("[HEAL] Loaded current active test code from disk: %s (%d chars)", test_file_path, len(test_code))
+        except Exception as exc:
+            logger.warning("[HEAL] Could not read active test file %s: %s", test_file_path, exc)
 
-    failure_url = exec_res.get("failure_url") or f_ctx.get("failure_url")
-    discovery_url = f_ctx.get("discovery_url") or failure_url or target_url
-    nav_info = f_ctx.get("navigation") or {}
-    is_auth_redirect = nav_info.get("auth_redirect", False)
-    is_expected_navigation = nav_info.get("expected", True)
+    if not test_code:
+        test_code = state.get("test_code") or ""
 
-    visible_errors = exec_res.get("visible_errors", [])
-    page_headings = [h.get("text") if isinstance(h, dict) else str(h) for h in raw_headings[:8]]
+    # Keep the full source when reasonably small.
+    # Otherwise keep the tail where the test body usually lives.
+    if len(test_code) > 12000:
+        test_code_for_llm = test_code[-12000:]
+    else:
+        test_code_for_llm = test_code
 
-    # Storage state session files
-    storage_state_available = None
-    try:
-        from storage.local import get_website_storage_dir
-        if target_url:
-            site_storage = get_website_storage_dir(target_url)
-            tests_dir = site_storage / "tests"
-            if tests_dir.exists():
-                session_files = list(tests_dir.glob("**/*.storage_state.json"))
-                if session_files:
-                    storage_state_available = str(session_files[0].resolve()).replace("\\", "/")
-    except Exception:
-        pass
+    # ------------------------------------------------------------------
+    # 5. DOM EVIDENCE
+    # ------------------------------------------------------------------
 
-    # Available accounts
-    available_accounts = []
-    try:
-        scoped_website_id = state.get("website_id") or current_test.get("website_id")
-        if scoped_website_id:
-            accounts = ForgeRepository.get_credentials_for_website(int(scoped_website_id))
-        else:
-            accounts = ForgeRepository.get_credentials_for_url(target_url)
-        available_accounts = [{"username": a.get("username"), "role": a.get("role")} for a in accounts]
-    except Exception:
-        pass
+    available_elements = _build_dom_for_llm(
+        raw_elements,
+        failure_evidence,
+    )
 
     logger.info(
-        f"[HEAL:TELEMETRY] Target URL: '{target_url}' | Failure URL: '{failure_url}' | "
-        f"Discovery URL: '{discovery_url}' | Auth Redirect: {is_auth_redirect} | Expected Nav: {is_expected_navigation}"
+        "[HEAL:DOM] Sending %d buttons, %d inputs, "
+        "%d links, %d selects",
+        len(available_elements["buttons"]),
+        len(available_elements["inputs"]),
+        len(available_elements["links"]),
+        len(available_elements["selects"]),
     )
-    logger.info(f"[HEAL:TELEMETRY] Visible Errors on Page: {visible_errors}")
-    logger.info(f"[HEAL:TELEMETRY] Storage State Available: {storage_state_available or 'None'}")
-    logger.info(f"[HEAL:TELEMETRY] Registered Accounts Available: {[a['username'] for a in available_accounts] or 'None'}")
-    logger.info(f"[HEAL:TELEMETRY] Error Summary: '{exec_res.get('error_summary')}'")
 
-    # ---------------------------------------------------------
-    # 5. ASSEMBLE FULL HEALER PAYLOAD
-    # ---------------------------------------------------------
+    # ------------------------------------------------------------------
+    # 6. PREVIOUS ATTEMPTS
+    # ------------------------------------------------------------------
+
+    previous_attempts = healing_history[-5:]
+
+    # Strip irrelevant giant fields before sending history to LLM.
+    history_for_llm = []
+
+    for attempt in previous_attempts:
+        history_for_llm.append(
+            {
+                "attempt": attempt.get("attempt"),
+                "failure_class": attempt.get(
+                    "failure_class"
+                ),
+                "diagnosis": attempt.get(
+                    "diagnosis"
+                ),
+                "fix_plan": attempt.get(
+                    "fix_plan"
+                ),
+                "preserve": attempt.get(
+                    "preserve"
+                ),
+            }
+        )
+
+    # ------------------------------------------------------------------
+    # 7. OTHER TELEMETRY
+    # ------------------------------------------------------------------
+
+    storage_state_available = None
+
+    try:
+        from storage.local import (
+            get_website_storage_dir,
+        )
+
+        if target_url:
+            site_storage = (
+                get_website_storage_dir(target_url)
+            )
+
+            tests_dir = site_storage / "tests"
+
+            if tests_dir.exists():
+                session_files = list(
+                    tests_dir.glob(
+                        "**/*.storage_state.json"
+                    )
+                )
+
+                if session_files:
+                    storage_state_available = str(
+                        session_files[0]
+                        .resolve()
+                    ).replace("\\", "/")
+
+    except Exception as exc:
+        logger.debug(
+            "[HEAL] Storage-state lookup failed: %s",
+            exc,
+        )
+
+    available_accounts = []
+
+    try:
+        website_id = (
+            state.get("website_id")
+            or current_test.get("website_id")
+        )
+
+        if website_id:
+            accounts = (
+                ForgeRepository
+                .get_credentials_for_website(
+                    int(website_id)
+                )
+            )
+        else:
+            accounts = (
+                ForgeRepository
+                .get_credentials_for_url(
+                    target_url
+                )
+            )
+
+        available_accounts = [
+            {
+                "username": account.get(
+                    "username"
+                ),
+                "role": account.get("role"),
+            }
+            for account in accounts
+        ]
+
+    except Exception as exc:
+        logger.debug(
+            "[HEAL] Account lookup failed: %s",
+            exc,
+        )
+
+    # ------------------------------------------------------------------
+    # 8. STRUCTURED PAYLOAD
+    # ------------------------------------------------------------------
+    #
+    # Important:
+    # We deliberately do NOT feed the LLM:
+    #
+    # - scenario keyword rankings
+    # - arbitrary heuristic conclusions
+    # - URL mismatch warnings
+    # - "this often means auth" messages
+    #
+    # We give it evidence.
+    #
+
     healer_payload = {
-        "test_id": test_id,
-        "test_intent": current_test.get("intent") or current_test.get("goal") or current_test.get("description"),
-        "target_url": target_url,
-        "failure_url": failure_url,
-        "discovery_url": discovery_url,
-        "navigation": {
-            "expected": is_expected_navigation,
-            "auth_redirect": is_auth_redirect,
+        "test": {
+            "test_id": test_id,
+            "intent": (
+                current_test.get("intent")
+                or current_test.get("goal")
+                or current_test.get("description")
+            ),
+            "expected_outcomes": (
+                current_test.get("expected")
+                or [
+                    current_test.get(
+                        "expected_outcome"
+                    )
+                ]
+            ),
+            "current_test_code": test_code_for_llm,
+            "source_code": test_code_for_llm,
         },
-        "visible_errors_on_page": visible_errors,
-        "page_headings": page_headings,
-        "body_text_preview": body_text_preview,
-        "available_accounts": available_accounts,
-        "storage_state_available": storage_state_available,
-        "expected_outcomes": current_test.get("expected") or [current_test.get("expected_outcome")],
-        "error_summary": exec_res.get("error_summary"),
-        "stderr": (exec_res.get("stderr") or "")[-2000:],
-        "suggested_analysis": analysis.get("suggested_fix"),
-        "available_elements_in_dom": available_elements,
-        "previous_heal_attempts": healing_history[-3:],
-        "test_code": code_to_heal[-2000:]
+
+        "failure": {
+            "error_summary": failure_evidence[
+                "error_summary"
+            ],
+            "stderr": failure_evidence[
+                "stderr"
+            ],
+            "exception": failure_evidence[
+                "exception"
+            ],
+            "exit_code": failure_evidence[
+                "exit_code"
+            ],
+            "passed": failure_evidence[
+                "passed"
+            ],
+        },
+
+        "navigation": {
+            "target_url": target_url,
+            "failure_url": failure_url,
+            "discovery_url": discovery_url,
+            "expected": expected_navigation,
+            "auth_redirect": auth_redirect,
+        },
+
+        "page": {
+            "discovery_snapshot_url": (
+                discovery_snapshot_url
+            ),
+            "title": discovery_title,
+            "headings": page_headings,
+            "body_text_preview": body_text_preview,
+            "visible_errors": visible_errors,
+        },
+
+        "dom": available_elements,
+
+        "session": {
+            "storage_state_available": (
+                storage_state_available
+            ),
+            "available_accounts": (
+                available_accounts
+            ),
+        },
+
+        "previous_heal_attempts": history_for_llm,
+
+        "analyzer": {
+            "suggested_fix": analysis.get(
+                "suggested_fix"
+            ),
+            "diagnosis": analysis.get(
+                "diagnosis"
+            ),
+        },
     }
 
-    payload_json = json.dumps(healer_payload, indent=2, default=str)
-    logger.info(f"[HEAL:LLM_DISPATCH] Dispatching payload ({len(payload_json)} chars) to Healer LLM...")
+    payload_json = json.dumps(
+        healer_payload,
+        indent=2,
+        default=str,
+    )
 
-    # ---------------------------------------------------------
-    # 6. INVOKE LLM
-    # ---------------------------------------------------------
+    logger.info(
+        "[HEAL:LLM_DISPATCH] Payload size: %d chars",
+        len(payload_json),
+    )
+
+    # ------------------------------------------------------------------
+    # 9. INVOKE LLM
+    # ------------------------------------------------------------------
+
     try:
         llm = get_chat_model()
+
         messages = [
-            SystemMessage(content=HEALER_SYSTEM_PROMPT),
-            HumanMessage(content=f"Failure Context for Healing:\n{payload_json}")
+            SystemMessage(
+                content=HEALER_SYSTEM_PROMPT
+            ),
+            HumanMessage(
+                content=(
+                    "Analyze this failed test.\n\n"
+                    "Failure evidence:\n"
+                    f"{payload_json}"
+                )
+            ),
         ]
+
         response = llm.invoke(messages)
-        content = response.content.strip()
 
-        if content.startswith("```"):
-            lines = content.splitlines()
-            if lines[0].startswith("```"):
-                lines = lines[1:]
-            if lines and lines[-1].startswith("```"):
-                lines = lines[:-1]
-            content = "\n".join(lines).strip()
+        content = (
+            response.content or ""
+        ).strip()
 
-        heal_dict = json.loads(content)
-        diagnosis = heal_dict.get("diagnosis", "Element locator timed out.")
-        fix_plan = heal_dict.get("fix_plan", "Use more resilient text or role locator.")
-        preserve = heal_dict.get("preserve", "Keep all existing setup and working assertions.")
-        failure_class = str(heal_dict.get("failure_class") or "automation_defect").strip().lower()
-        if failure_class not in ("wrong_expectation", "automation_defect"):
-            failure_class = "automation_defect"
+        heal_result = _parse_llm_result(
+            content
+        )
 
-        logger.info(f"[HEAL:LLM_RESULT] Success!")
-        logger.info(f"[HEAL:LLM_RESULT]   * Failure Class : {failure_class}")
-        logger.info(f"[HEAL:LLM_RESULT]   * Diagnosis     : {diagnosis}")
-        logger.info(f"[HEAL:LLM_RESULT]   * Fix Plan      : {fix_plan}")
-        logger.info(f"[HEAL:LLM_RESULT]   * Preserve      : {preserve}")
+    except Exception as exc:
+        # --------------------------------------------------------------
+        # IMPORTANT:
+        # If the LLM fails, do NOT invent a repair.
+        # --------------------------------------------------------------
 
-    except Exception as e:
-        logger.warning(f"[HEAL:LLM_FALLBACK] LLM call failed ({e}). Using fallback heuristic.")
-        if is_auth_redirect:
-            diagnosis = f"Application redirected to auth barrier '{failure_url}'. Visible errors: {visible_errors}."
-            fix_plan = f"Initialize session with storage_state: '{storage_state_available}'." if storage_state_available else "Prepend login steps."
-            preserve, failure_class = "Keep test assertions.", "automation_defect"
-        else:
-            diagnosis, fix_plan, preserve, failure_class = f"Execution defect on '{discovery_url}': {exec_res.get('error_summary') or 'assertion failure'}.", "Align selectors/assertions with discovered DOM elements.", "Keep assertions.", "automation_defect"
+        logger.warning(
+            "[HEAL:LLM] Healer LLM failed: %s",
+            exc,
+        )
 
-        logger.info(f"[HEAL:FALLBACK] Diagnosis: {diagnosis}")
-        logger.info(f"[HEAL:FALLBACK] Fix Plan : {fix_plan}")
-        logger.info(f"[HEAL:FALLBACK] Preserve : {preserve}")
+        heal_result = _safe_no_fix(
+            diagnosis=(
+                "The healer could not reliably analyze "
+                "the failure."
+            ),
+            evidence=[
+                str(
+                    failure_evidence.get(
+                        "error_summary"
+                    )
+                    or "No error summary available."
+                )
+            ],
+        )
+
+    # ------------------------------------------------------------------
+    # 10. SAFETY VALIDATION OF LLM RESULT
+    # ------------------------------------------------------------------
+
+    action = heal_result["action"]
+    failure_class = heal_result[
+        "failure_class"
+    ]
+    diagnosis = heal_result["diagnosis"]
+    evidence = heal_result["evidence"]
+    confidence = heal_result["confidence"]
+    fix_plan = heal_result["fix_plan"]
+    preserve = heal_result["preserve"]
+
+    # --------------------------------------------------------------
+    # No diagnosis = no fix
+    # --------------------------------------------------------------
+    if not diagnosis:
+        heal_result = _safe_no_fix(
+            diagnosis=(
+                "The healer did not provide a "
+                "reliable diagnosis."
+            ),
+            evidence=evidence,
+        )
+
+        action = "no_fix"
+        failure_class = "unknown"
+        diagnosis = heal_result["diagnosis"]
+        evidence = heal_result["evidence"]
+        confidence = heal_result["confidence"]
+        fix_plan = ""
+        preserve = heal_result["preserve"]
+
+    # --------------------------------------------------------------
+    # Fix without a fix plan = no fix
+    # --------------------------------------------------------------
+    if action == "fix" and not fix_plan:
+        logger.warning(
+            "[HEAL:GUARD] LLM requested fix without "
+            "a concrete fix plan. Converting to no_fix."
+        )
+
+        heal_result = _safe_no_fix(
+            diagnosis=diagnosis,
+            evidence=evidence,
+            preserve=preserve,
+        )
+
+        action = "no_fix"
+        failure_class = "unknown"
+        fix_plan = ""
+        confidence = heal_result["confidence"]
+
+    # --------------------------------------------------------------
+    # Reject invented DOM selectors
+    # --------------------------------------------------------------
+    if action == "fix":
+        if not _selector_exists_in_dom(
+            fix_plan,
+            available_elements,
+        ):
+            logger.warning(
+                "[HEAL:GUARD] Proposed fix contains "
+                "a selector not present in discovery. "
+                "Converting to no_fix."
+            )
+
+            heal_result = _safe_no_fix(
+                diagnosis=(
+                    diagnosis
+                    + " Proposed repair could not be "
+                    "grounded in discovered DOM."
+                ),
+                evidence=evidence,
+                preserve=preserve,
+            )
+
+            action = "no_fix"
+            failure_class = "unknown"
+            fix_plan = ""
+            confidence = heal_result[
+                "confidence"
+            ]
+
+    # --------------------------------------------------------------
+    # Reject repeated fixes
+    # --------------------------------------------------------------
+    if action == "fix":
+        if _previous_fix_already_attempted(
+            fix_plan,
+            healing_history,
+        ):
+            logger.warning(
+                "[HEAL:GUARD] Proposed fix was already "
+                "attempted. Converting to no_fix."
+            )
+
+            heal_result = _safe_no_fix(
+                diagnosis=(
+                    diagnosis
+                    + " The proposed repair was already "
+                    "attempted in a previous healing cycle."
+                ),
+                evidence=evidence,
+                preserve=preserve,
+            )
+
+            action = "no_fix"
+            failure_class = "unknown"
+            fix_plan = ""
+            confidence = heal_result[
+                "confidence"
+            ]
+
+    # --------------------------------------------------------------
+    # Low confidence should not produce an edit
+    # --------------------------------------------------------------
+    if action == "fix" and confidence < 0.60:
+        logger.info(
+            "[HEAL:GUARD] Confidence %.2f is below "
+            "minimum fix threshold. Returning no_fix.",
+            confidence,
+        )
+
+        heal_result = _safe_no_fix(
+            diagnosis=diagnosis,
+            evidence=evidence,
+            preserve=preserve,
+        )
+
+        action = "no_fix"
+        failure_class = "unknown"
+        fix_plan = ""
+        confidence = heal_result[
+            "confidence"
+        ]
+
+    # ------------------------------------------------------------------
+    # 11. LOG FINAL DECISION
+    # ------------------------------------------------------------------
+
+    logger.info(
+        "[HEAL:RESULT] Action: %s",
+        action,
+    )
+
+    logger.info(
+        "[HEAL:RESULT] Failure Class: %s",
+        failure_class,
+    )
+
+    logger.info(
+        "[HEAL:RESULT] Confidence: %.2f",
+        confidence,
+    )
+
+    logger.info(
+        "[HEAL:RESULT] Diagnosis: %s",
+        diagnosis,
+    )
+
+    if evidence:
+        logger.info(
+            "[HEAL:RESULT] Evidence: %s",
+            evidence,
+        )
+
+    logger.info(
+        "[HEAL:RESULT] Fix Plan: %s",
+        fix_plan or "(none)",
+    )
+
+    logger.info(
+        "[HEAL:RESULT] Preserve: %s",
+        preserve or "(none)",
+    )
+
+    # ------------------------------------------------------------------
+    # 12. RECORD HEAL EVENT
+    # ------------------------------------------------------------------
 
     heal_event: HealEvent = {
         "attempt": heal_attempt + 1,
         "test_id": test_id,
-        "error_snippet": exec_res.get("error_summary", "")[:200],
+        "error_snippet": str(
+            execution_result.get(
+                "error_summary"
+            )
+            or ""
+        )[:300],
         "failure_class": failure_class,
         "diagnosis": diagnosis,
         "fix_plan": fix_plan,
         "preserve": preserve,
     }
-    healing_history.append(heal_event)
+
+    # Add optional fields if ForgeState/HealEvent accepts them.
+    #
+    # We intentionally do this after constructing the base event so
+    # older TypedDict definitions don't break the main flow.
+    try:
+        heal_event["action"] = action
+        heal_event["confidence"] = confidence
+        heal_event["evidence"] = evidence
+    except Exception:
+        pass
+
+    healing_history.append(
+        heal_event
+    )
 
     logger.info("=" * 70)
-    logger.info(f"[HEAL] Completed Healer node for '{test_id}'. Routing to Editor.")
+    logger.info(
+        "[HEAL] Completed Healer node for '%s'. "
+        "Action=%s",
+        test_id,
+        action,
+    )
     logger.info("=" * 70)
+
+    # ------------------------------------------------------------------
+    # 13. RETURN STATE
+    # ------------------------------------------------------------------
 
     return {
         "heal_attempt": heal_attempt + 1,
+        "test_code": test_code,
         "healing_history": healing_history,
+
         "healing_plan": {
+            "action": action,
             "failure_class": failure_class,
             "diagnosis": diagnosis,
+            "evidence": evidence,
+            "confidence": confidence,
             "fix_plan": fix_plan,
             "preserve": preserve,
         },

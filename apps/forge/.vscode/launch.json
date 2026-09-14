@@ -1,0 +1,52 @@
+{
+    // Use IntelliSense to learn about possible attributes.
+    // Hover to view descriptions of existing attributes.
+    // For more information, visit: https://go.microsoft.com/fwlink/?linkid=830387
+    "version": "0.2.0",
+    "configurations": [
+        {
+            "name": "FastAPI: uvicorn src.main:app --reload",
+            "type": "debugpy",
+            "request": "launch",
+            "module": "uvicorn",
+            "args": [
+                "src.main:app",
+                "--reload"
+            ],
+            "jinja": true,
+            "subProcess": true,
+            "cwd": "${workspaceFolder}",
+            "envFile": "${workspaceFolder}/.env",
+            "windows": {
+                "python": "${workspaceFolder}/.venv/Scripts/python.exe"
+            },
+            "linux": {
+                "python": "${workspaceFolder}/.venv/bin/python"
+            },
+            "osx": {
+                "python": "${workspaceFolder}/.venv/bin/python"
+            }
+        },
+        {
+            "name": "FastAPI: uvicorn src.main:app (No Reload)",
+            "type": "debugpy",
+            "request": "launch",
+            "module": "uvicorn",
+            "args": [
+                "src.main:app"
+            ],
+            "jinja": true,
+            "cwd": "${workspaceFolder}",
+            "envFile": "${workspaceFolder}/.env",
+            "windows": {
+                "python": "${workspaceFolder}/.venv/Scripts/python.exe"
+            },
+            "linux": {
+                "python": "${workspaceFolder}/.venv/bin/python"
+            },
+            "osx": {
+                "python": "${workspaceFolder}/.venv/bin/python"
+            }
+        }
+    ]
+}

@@ -4,17 +4,24 @@ This document describes how to execute and customize the Forge Autonomous QA Age
 
 ## Overview
 
-The Forge Agent is powered by LangGraph, implementing a 9-node reactive state graph:
+The Forge Agent is powered by LangGraph, implementing a **Decoupled 8-Stage Reactive State Graph** anchored on three fundamental invariants:
+1. **Action is validated independently before expectations are created:** Interaction steps are executed and proven mechanically and semantically viable before any assertions are synthesized.
+2. **Expectation is derived from intent + observed result, not guessed before execution:** `Observed Behavior → Candidate Expectations → Intent Grounding → Grounded Expectations`. Assertions are derived from real DOM deltas and HTTP responses filtered through the user journey's intent, with confidence scores and explicit evidence.
+3. **Structural Isolation of Healing:** Once an action is validated, expectation healing is structurally forbidden from receiving or modifying action code. Once an expectation is validated, action healing is structurally forbidden from receiving or modifying expectation code.
 
-1. **`discover`**: Navigates to the target page via Playwright, extracting interactive elements, DOM layout, and console/network telemetry.
-2. **`understanding`**: Uses LLM semantic analysis to identify page type, purpose, and key functional user actions.
-3. **`planner`**: Formulates prioritized test scenarios (smoke, primary flows, validation, edge cases).
-4. **`builder`**: Generates resilient Playwright test scripts (defaults to Python `.py` scripts, with optional TypeScript `.spec.ts`) targeting discovered element selectors and `forge_id` markers.
-5. **`runner`**: Executes the test script in an isolated subprocess honoring headed/headless settings (`sys.executable` for Python, `npx playwright` for TS).
-6. **`observer`**: Gathers screenshots, traces, stderr, and failure artifacts.
-7. **`analyzer`**: Categorizes run results (`PASS`, `NEED_HEAL`, `APP_BUG`, `ENV_ERROR`).
-8. **`healer`**: Evaluates failure telemetry, updates locator strategies, and triggers re-generation.
-9. **`advance_test`**: Cycles to the next planned scenario until all tests in the plan are completed.
+### Node Execution Sequence:
+1. **`discover`**: Navigates to the target page via Playwright, capturing interactive elements, DOM layout, and console/network telemetry.
+2. **`understanding`**: Uses LLM semantic analysis to identify page type, purpose, and key functional capabilities.
+3. **`planner`**: Formulates prioritized user journey hypotheses (intent, preconditions, action steps).
+4. **`action_builder`**: Synthesizes a structured `ActionSpec` and compiles an ephemeral execution script with zero speculative assertions.
+5. **`action_runner`**: Executes the action script in an isolated subprocess. Any execution crash is an isolated mechanical action failure.
+6. **`result_discovery`**: Extracts live post-action state and computes a structured `DOMDelta` (added/removed elements, alerts, headings).
+7. **`expectation_analysis`**: Evaluates `(Journey Intent, Pre-Action Discovery, ActionSpec, PostActionResult)` to ground assertions with confidence and evidence.
+8. **`correctness`**: 5-way verdict evaluation (`CORRECT`, `ACTION_DEFECT` [semantic], `EXPECTATION_DEFECT`, `APP_BUG`, `INCONCLUSIVE`).
+9. **`heal_action`**: Structurally isolated action repair (locators, scrolling, timing) with dedicated budget (max 2–3).
+10. **`heal_expectation`**: Structurally isolated expectation repair (matchers, text) with dedicated budget (max 1–2).
+11. **`assemble_testcase`**: Combines verified `ActionSpec` + verified `ExpectationSpec` + Provenance metadata into a 10-artifact package (`manifest.json`, `action.json`, `action.py`, `action_result.json`, `discovery_before.json`, `discovery_after.json`, `expectations.json`, `verification.json`, `summary.json`, `test.py`) persisted durably in Supabase Storage and cached locally for execution.
+12. **`advance_test`**: Cycles to the next planned journey until the suite completes.
 
 ---
 

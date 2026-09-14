@@ -98,3 +98,20 @@ Or check table status and columns across schemas:
 ```bash
 uv run python scripts/check_tables.py
 ```
+
+---
+
+## Running & Debugging the Backend Server
+
+### Command Line (via `uv`)
+Run the FastAPI development server with auto-reload:
+```bash
+uv run uvicorn src.main:app --reload
+```
+By default, this serves the API at `http://127.0.0.1:8000`.
+
+### VS Code Debugging (`.vscode/launch.json`)
+Launch configurations are provided in `.vscode/launch.json`:
+- **FastAPI: uvicorn src.main:app --reload**: Runs `src.main:app` with `uvicorn` and `--reload`, with `subProcess: true` so breakpoints in reloaded worker processes are caught. Automatically loads `.env` and uses the project's `.venv` interpreter.
+- **FastAPI: uvicorn src.main:app (No Reload)**: Runs `src.main:app` in a single process without reloading for dedicated step-through debugging.
+

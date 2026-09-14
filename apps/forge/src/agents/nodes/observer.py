@@ -29,9 +29,26 @@ def observer_node(state: ForgeState) -> Dict[str, Any]:
 
     exec_res["screenshot_paths"] = screenshots
 
+    # Ensure failure_url is populated on failure if missing
+    if not passed and not exec_res.get("failure_url"):
+        current_test = state.get("current_test") or {}
+        fallback_url = current_test.get("page_url") or state.get("target_url")
+        if fallback_url:
+            exec_res["failure_url"] = fallback_url
+
+    # Augment error_summary with assertion/timeout specifics from stderr if generic
+    stderr = exec_res.get("stderr", "")
+    if not passed and stderr:
+        for line in reversed(stderr.splitlines()):
+            clean_l = line.strip()
+            if any(k in clean_l for k in ("AssertionError:", "TimeoutError:", "Error:", "expect(")):
+                exec_res["error_summary"] = clean_l
+                break
+
     logger.info(
         f"[OBSERVER] Observed Test Outcome: Passed={passed}, ExitCode={exit_code}, "
-        f"Duration={duration}s, ScreenshotsCaptured={len(screenshots)}"
+        f"Duration={duration}s, ScreenshotsCaptured={len(screenshots)}, "
+        f"FailureURL={exec_res.get('failure_url')}"
     )
 
     return {"execution_result": exec_res}

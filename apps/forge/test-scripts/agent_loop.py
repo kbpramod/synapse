@@ -121,36 +121,61 @@ def main():
                 for t in plan:
                     print(f"      - [{t.get('priority', '').upper()}] {t.get('id')}: {t.get('title')}")
 
-            elif node_name == "builder":
-                print(f"    Script Path  : {state_update.get('test_file_path')}")
+            elif node_name == "action_builder":
+                spec = state_update.get("action_spec", {})
+                steps = spec.get("steps", [])
+                print(f"    Target URL   : {spec.get('target_url')}")
+                print(f"    Action Steps : {len(steps)} interaction steps planned")
+                for s in steps[:5]:
+                    print(f"      - Step {s.get('step_id')}: {s.get('action_type')} {s.get('selector') or ''} ({s.get('description', '')})")
 
-            elif node_name == "runner":
-                res = state_update.get("execution_result", {})
+            elif node_name == "action_runner":
+                res = state_update.get("action_result", {})
                 status_str = "PASSED" if res.get("passed") else f"FAILED (exit {res.get('exit_code')})"
-                print(f"    Run Result   : {status_str} in {res.get('duration_s')}s")
+                print(f"    Action Run   : {status_str} in {res.get('duration_s')}s")
+                if not res.get("passed"):
+                    print(f"    Action Error : {res.get('error_summary')}")
 
-            elif node_name == "observer":
-                res = state_update.get("execution_result", {})
-                screenshots = res.get("screenshot_paths", [])
-                if screenshots:
-                    print(f"    Screenshots  : {len(screenshots)} captured")
+            elif node_name == "result_discovery":
+                post_res = state_update.get("post_action_result", {})
+                nav = post_res.get("navigation", {})
+                delta = post_res.get("dom_delta", {})
+                print(f"    Result URL   : {nav.get('result_url')} (Changed: {nav.get('url_changed')})")
+                print(f"    DOM Delta    : +{len(delta.get('added_elements', []))} added, "
+                      f"-{len(delta.get('removed_elements', []))} removed, "
+                      f"{len(delta.get('visible_alerts', []))} alerts, "
+                      f"{len(delta.get('current_headings', []))} headings")
 
-            elif node_name == "analyzer":
-                analysis = state_update.get("analysis", {})
-                print(f"    Verdict      : {analysis.get('verdict')}")
-                print(f"    Reason       : {analysis.get('reason')}")
-                if analysis.get("suggested_fix"):
-                    print(f"    Fix Idea     : {analysis.get('suggested_fix')}")
+            elif node_name == "expectation_analysis":
+                exp_spec = state_update.get("expectation_spec", {})
+                exps = exp_spec.get("expectations", [])
+                print(f"    Grounded Exps: {len(exps)} assertions derived")
+                for e in exps:
+                    print(f"      - [{e.get('type')}] conf={e.get('confidence')}: {e.get('code')}")
 
-            elif node_name == "healer":
-                history = state_update.get("healing_history", [])
-                latest = history[-1] if history else {}
-                print(f"    Heal Attempt : #{state_update.get('heal_attempt')}")
-                print(f"    Diagnosis    : {latest.get('diagnosis')}")
-                print(f"    Fix Plan     : {latest.get('fix_plan')}")
+            elif node_name == "correctness":
+                verdict = state_update.get("correctness_verdict")
+                reason = state_update.get("correctness_reason")
+                print(f"    Verdict      : [{verdict}]")
+                print(f"    Evaluation   : {reason}")
 
-            elif node_name == "editor":
-                print(f"    Edited Script: {state_update.get('test_file_path')}")
+            elif node_name == "heal_action":
+                spec = state_update.get("action_spec", {})
+                attempt = state_update.get("action_heal_attempt")
+                print(f"    Heal Action  : Attempt #{attempt}")
+                print(f"    Repaired     : {len(spec.get('steps', []))} steps in ActionSpec")
+
+            elif node_name == "heal_expectation":
+                spec = state_update.get("expectation_spec", {})
+                attempt = state_update.get("expectation_heal_attempt")
+                print(f"    Heal Expect  : Attempt #{attempt}")
+                print(f"    Refined Exps : {len(spec.get('expectations', []))} assertions in ExpectationSpec")
+
+            elif node_name == "assemble_testcase":
+                print(f"    Assembled    : {state_update.get('test_file_path')}")
+                prov = state_update.get("test_provenance", {})
+                print(f"    Provenance   : Action validated with {prov.get('action_provenance', {}).get('heals_needed', 0)} heals, "
+                      f"{len(prov.get('expectation_provenance', []))} assertions grounded")
 
             elif node_name == "advance_test":
                 curr = state_update.get("current_test", {})

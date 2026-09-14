@@ -47,9 +47,16 @@ def _parse_telemetry(stdout: str, stderr: str) -> Dict[str, Any]:
         except Exception:
             pass
 
+    failure_url = failure_url_match.group(1).strip() if failure_url_match else None
+    if not failure_url and stderr:
+        # Fallback: extract URL from Playwright error logs or traceback
+        url_match = re.search(r"https?://[^\s'\"\)<>]+", stderr)
+        if url_match:
+            failure_url = url_match.group(0).rstrip(".,;")
+
     return {
         "final_url": final_url_match.group(1).strip() if final_url_match else None,
-        "failure_url": failure_url_match.group(1).strip() if failure_url_match else None,
+        "failure_url": failure_url,
         "visible_errors": visible_errors,
         "error_elements": error_elements,
     }
@@ -62,19 +69,23 @@ def run_test_script(
     env_vars: Optional[Dict[str, str]] = None,
     headed: Optional[bool] = None,
 ) -> Dict[str, Any]:
-    """Executes a Python Playwright test script in an isolated subprocess."""
+    """Executes a Python Playwright test script in an isolated subprocess via runner.harness."""
     test_path = Path(test_file_path)
     if not test_path.exists():
         raise FileNotFoundError(f"Test script not found: {test_file_path}")
 
+    src_dir = str(Path(__file__).resolve().parent.parent)
     env = os.environ.copy()
+    existing_pythonpath = env.get("PYTHONPATH", "")
+    env["PYTHONPATH"] = f"{src_dir}{os.pathsep}{existing_pythonpath}".rstrip(os.pathsep)
+
     if env_vars:
         env.update(env_vars)
 
     if headed is not None:
         env["HEADLESS"] = "false" if headed else "true"
 
-    cmd = [sys.executable, str(test_path.resolve())]
+    cmd = [sys.executable, "-m", "runner.harness", str(test_path.resolve())]
 
     start_time = time.time()
     try:

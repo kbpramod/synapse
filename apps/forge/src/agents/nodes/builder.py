@@ -7,7 +7,8 @@ from agents.llm import get_chat_model
 from agents.state import ForgeState
 from langchain_core.messages import SystemMessage, HumanMessage
 from agents.script_lint import apply_lint
-from storage.local import get_website_storage_dir, mirror_to_cloud
+from storage.local import get_website_storage_dir, mirror_to_cloud, _relative_key
+from storage.supabase_storage import get_storage_path
 from db.repository import ForgeRepository
 from schemas.discovery import FIXED_VIEWPORTS
 
@@ -28,44 +29,44 @@ Requirements for the generated Playwright Python test:
    from playwright.sync_api import sync_playwright, expect
 
 2. Structure inside a callable test function configuring the specified target_viewport:
-   def test_{test_id}():
-       headless = os.getenv("HEADLESS", "false").lower() in (
-           "true",
-           "1",
-           "yes",
-       )
-       with sync_playwright() as p:
-           browser = p.chromium.launch(headless=headless)
-           # If storage_state_path is provided in context, reuse the authenticated session:
-           # context = browser.new_context(viewport={"width": <target_width>, "height": <target_height>}, storage_state="<storage_state_path>")
-           context = browser.new_context(viewport={"width": <target_width>, "height": <target_height>})
-           page = context.new_page()
-           try:
-               page.goto('{target_url}', wait_until='domcontentloaded', timeout=30000)
-               # user actions, state transitions, and functional assertions here
-               print(f"[FINAL_URL] {page.url}")
-               context.storage_state(path=os.path.splitext(os.path.abspath(__file__))[0] + ".storage_state.json")
-               print("[TEST PASSED] {scenario_title}")
-           except Exception as exc:
-               try:
-                   print(f"[FAILURE_URL] {page.url}")
-                   err_sel = "[role='alert'], .alert-danger, .alert-warning, .error-message, .error-msg, .error:not(input):not(form), .invalid-feedback, [data-test='error'], [data-testid='error']"
-                   raw_errors = [t.strip() for t in page.locator(err_sel).all_inner_texts() if t.strip()]
-                   clean_errors = [t for t in raw_errors if not re.search(r"\\b(success|successfully|subscribed)\\b", t, re.I)]
-                   if clean_errors:
-                       import json
-                       print(f"[VISIBLE_ERRORS] {json.dumps(clean_errors[:5])}")
-                       print(f"[ERROR_ELEMENTS] {json.dumps([err_sel][:5])}")
-                   page.screenshot(path=os.path.splitext(os.path.abspath(__file__))[0] + "_failure.png")
-               except Exception:
-                   pass
-               raise exc
-           finally:
-               context.close()
-               browser.close()
+    def test_{test_id}():
+        headless = os.getenv("HEADLESS", "false").lower() in (
+            "true",
+            "1",
+            "yes",
+        )
+        with sync_playwright() as p:
+            browser = p.chromium.launch(headless=headless)
+            # If storage_state_path is provided in context, reuse the authenticated session:
+            # context = browser.new_context(viewport={"width": <target_width>, "height": <target_height>}, storage_state="<storage_state_path>")
+            context = browser.new_context(viewport={"width": <target_width>, "height": <target_height>})
+            page = context.new_page()
+            try:
+                page.goto('{target_url}', wait_until='domcontentloaded', timeout=30000)
+                # user actions, state transitions, and functional assertions here
+                print(f"[FINAL_URL] {page.url}")
+                print("[TEST PASSED] {scenario_title}")
+            finally:
+                context.close()
+                browser.close()
 
-   if __name__ == "__main__":
-       test_{test_id}()
+    if __name__ == "__main__":
+        test_{test_id}()
+
+    CRITICAL EXECUTION INVARIANTS:
+    - KEEP TESTS STRICTLY FOCUSED ON: Setup, User Actions, Assertions, and Cleanup.
+    - NEVER embed diagnostic try/except blocks to collect failure screenshots, URLs, or visible errors.
+      Failure-evidence collection and session storage state persistence are handled externally by Runner/Observer.
+    - NO SWALLOWED EXCEPTIONS: Do not write `try/except: pass` around waits or actions. Use Playwright's
+      built-in assertion auto-waiting (`expect(...)`) and standard timeouts.
+    - SEMANTIC ALERT STATES: Understand the semantic distinction of alert elements:
+        .alert-success  -> success confirmation
+        .alert-danger   -> error banner
+        .alert-info     -> informational banner
+        .alert          -> generic container (NOT an error!)
+      When verifying that 'no error message' is displayed, NEVER assert `locator('.alert').to_have_count(0)`
+      or `locator('[role=alert]').to_have_count(0)`. Target specific error classes:
+      `expect(page.locator('.alert-danger, .error-message, .error-msg, .invalid-feedback, [data-test=\"error\"]')).to_have_count(0)`
 
 3. Grounded Interaction Path Selection & DOM Evidence Invariant:
    - CRITICAL ARCHITECTURAL RULE: Discovered DOM locators, IDs, attributes, classes, and names are immutable technical evidence.
@@ -430,21 +431,7 @@ def test_{test_id_clean}():
             page.goto('{target_url}', wait_until='domcontentloaded', timeout=30000)
             expect(page).to_have_title(re.compile(r".+")){interaction_block}
             print(f"[FINAL_URL] {{page.url}}")
-            context.storage_state(path=os.path.splitext(os.path.abspath(__file__))[0] + ".storage_state.json")
             print('[TEST PASSED] [{test_type}] Successfully completed journey on {target_url}')
-        except Exception as exc:
-            try:
-                print(f"[FAILURE_URL] {{page.url}}")
-                err_sel = "[role='alert'], .alert-danger, .alert-warning, .error-message, .error-msg, .error:not(input):not(form), .invalid-feedback, [data-test='error'], [data-testid='error']"
-                raw_errors = [t.strip() for t in page.locator(err_sel).all_inner_texts() if t.strip()]
-                clean_errors = [t for t in raw_errors if not re.search(r"\\b(success|successfully|subscribed)\\b", t, re.I)]
-                if clean_errors:
-                    print(f"[VISIBLE_ERRORS] {{json.dumps(clean_errors[:5])}}")
-                    print(f"[ERROR_ELEMENTS] {{json.dumps([err_sel][:5])}}")
-                page.screenshot(path=os.path.splitext(os.path.abspath(__file__))[0] + "_failure.png")
-            except Exception:
-                pass
-            raise exc
         finally:
             context.close()
             browser.close()
@@ -513,6 +500,8 @@ test.describe('[{test_type}] {current_test.get("category", "regression").capital
         # save_test's ON CONFLICT branch and silently overwrite an unrelated site's row
         # (its script_path/website_id get updated while `domain` is left stale).
         db_test_id = f"ws{website_id}_{test_id}" if website_id else f"{domain}_{test_id}"
+        rel_key = _relative_key(test_file_path)
+        supabase_script_path = get_storage_path(rel_key)
 
         ForgeRepository.save_test(
             test_id=db_test_id,
@@ -524,7 +513,7 @@ test.describe('[{test_type}] {current_test.get("category", "regression").capital
             priority=current_test.get("priority", "medium"),
             steps=current_test.get("steps", []),
             expected_outcome=current_test.get("expected_outcome", ""),
-            script_path=str(test_file_path),
+            script_path=supabase_script_path,
             test_code=code,
             language="python" if is_python else "typescript",
             website_id=website_id,
@@ -537,4 +526,5 @@ test.describe('[{test_type}] {current_test.get("category", "regression").capital
     return {
         "test_code": code,
         "test_file_path": str(test_file_path),
+        "supabase_script_path": supabase_script_path if "supabase_script_path" in locals() else None,
     }

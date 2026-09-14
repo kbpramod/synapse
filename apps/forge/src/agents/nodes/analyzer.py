@@ -233,6 +233,26 @@ def analyzer_node(state: ForgeState) -> Dict[str, Any]:
             cron_hours = current_test.get("cron_interval_hours", 24)
             ForgeRepository.update_test_run_timestamps(test_id, cron_hours)
             logger.info(f"[ANALYZER] Indexed PASS in test_runs and advanced next_run_at by {cron_hours}h.")
+
+            # Update Supabase Storage manifest
+            try:
+                from storage.test_artifact_store import update_test_manifest
+                from storage.local import sanitize_domain
+                domain = sanitize_domain(current_test.get("page_url") or state.get("target_url") or "example.com")
+                update_test_manifest(
+                    domain=domain,
+                    test_id=test_id,
+                    updates={
+                        "last_run": {
+                            "status": "passed",
+                            "verdict": "CORRECT",
+                            "timestamp": datetime.now(timezone.utc).isoformat(),
+                            "duration_s": exec_res.get("duration_s", 0.0),
+                        }
+                    }
+                )
+            except Exception as man_err:
+                logger.warning(f"[ANALYZER] Could not update test manifest: {man_err}")
         except Exception as db_err:
             logger.warning(f"[ANALYZER] Could not update PostgreSQL run metrics: {db_err}")
 
@@ -260,9 +280,36 @@ def analyzer_node(state: ForgeState) -> Dict[str, Any]:
     nav_info = classify_navigation(target_url, failure_url, current_test, visible_errors)
     discovery_url = failure_url if (failure_url and failure_url.startswith("http")) else target_url
 
+    # Classify failure stage via test_artifact_store (Action vs Expectation vs Application)
+    from storage.test_artifact_store import classify_test_failure, update_test_manifest
+    from storage.local import sanitize_domain
+    test_id = str(current_test.get("test_id") or current_test.get("id") or "unknown_test")
+    domain = sanitize_domain(target_url or "example.com")
+    failure_class = classify_test_failure(test_id, exec_res)
+    failure_stage = failure_class.get("failure_stage", "action")
+
+    try:
+        from datetime import datetime, timezone
+        update_test_manifest(
+            domain=domain,
+            test_id=test_id,
+            updates={
+                "last_run": {
+                    "status": "failed",
+                    "failure_stage": failure_stage,
+                    "verdict": failure_class.get("isolate_to"),
+                    "timestamp": datetime.now(timezone.utc).isoformat(),
+                    "duration_s": exec_res.get("duration_s", 0.0),
+                }
+            }
+        )
+    except Exception as man_err:
+        logger.warning(f"[ANALYZER] Could not update test manifest for failure: {man_err}")
+
     # Test failed: check heal budget
     if heal_attempt >= max_heal_attempts:
         logger.warning(f"[ANALYZER] Heal budget exceeded ({heal_attempt}/{max_heal_attempts}) for '{current_test.get('id')}'. Routing to verification.")
+
         analysis = {
             "verdict": "SUSPECTED_APP_FAILURE",
             "reason": f"Maximum heal attempts ({max_heal_attempts}) reached without resolution: {exec_res.get('error_summary')}",
@@ -353,6 +400,7 @@ def analyzer_node(state: ForgeState) -> Dict[str, Any]:
             "verdict": verdict,
             "reason": reason,
             "failure_type": failure_type,
+            "failure_stage": failure_stage,
             "suggested_fix": suggested_fix,
         }
     except Exception as e:
@@ -362,15 +410,18 @@ def analyzer_node(state: ForgeState) -> Dict[str, Any]:
                 "verdict": "NEED_HEAL",
                 "reason": f"Protected route redirected to auth page '{failure_url}'. Authentication required.",
                 "failure_type": "authentication_redirect",
+                "failure_stage": "action",
                 "suggested_fix": "Initialize context with saved storage_state or prepend login authentication steps.",
             }
         else:
             analysis = {
                 "verdict": "NEED_HEAL",
                 "reason": f"Execution error: {exec_res.get('error_summary') or 'Timeout/locator failure'}",
-                "failure_type": "selector_or_timing",
-                "suggested_fix": "Refine locators and adjust wait times.",
+                "failure_type": failure_class.get("isolate_to", "selector_or_timing"),
+                "failure_stage": failure_stage,
+                "suggested_fix": "Refine locators or adjust assertions based on failure stage.",
             }
+
 
     failure_context: FailureContext = {
         "target_url": target_url,

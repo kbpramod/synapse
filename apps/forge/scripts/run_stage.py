@@ -142,10 +142,19 @@ def run_tests_stage(url: str, headed: bool = False):
 
     for t in tests:
         path = t.get("script_path")
+        test_id = t["test_id"]
         if not path or not Path(path).exists():
-            print(f"  [MISSING SCRIPT] {t['test_id']}: {path}")
-            continue
-        print(f"  Executing {t['test_id']}...")
+            from storage.test_artifact_store import materialize_test_script
+            mat_path = materialize_test_script(domain, test_id, script_path=path)
+            if mat_path.exists() and mat_path.stat().st_size > 0:
+                path = str(mat_path)
+            elif t.get("test_code"):
+                mat_path.write_text(t["test_code"], encoding="utf-8")
+                path = str(mat_path)
+            else:
+                print(f"  [MISSING SCRIPT] {test_id}: {path}")
+                continue
+        print(f"  Executing {test_id}...")
         res = run_test_script(path, headed=headed)
         status = "PASSED" if res["passed"] else "FAILED"
         print(f"    --> {status} ({res['duration_s']}s) Exit={res['exit_code']}")

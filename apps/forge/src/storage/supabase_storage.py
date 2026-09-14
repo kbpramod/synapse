@@ -28,7 +28,29 @@ def _bucket():
 
 def _namespaced(key: str) -> str:
     key = key.lstrip("/")
-    return f"{SUPABASE_STORAGE_PREFIX}/{key}" if SUPABASE_STORAGE_PREFIX else key
+    if not SUPABASE_STORAGE_PREFIX:
+        return key
+    prefix = SUPABASE_STORAGE_PREFIX.strip("/")
+    if key == prefix or key.startswith(f"{prefix}/"):
+        return key
+    return f"{prefix}/{key}"
+
+
+def get_storage_path(key: str) -> str:
+    """Returns the namespaced path within the Supabase Storage bucket."""
+    return _namespaced(key)
+
+
+def get_public_url(key: str) -> str:
+    """Returns the public URL for a file in Supabase Storage."""
+    if not is_configured():
+        return ""
+    try:
+        res = _bucket().get_public_url(_namespaced(key))
+        return res if isinstance(res, str) else res.get("publicUrl", "")
+    except Exception as e:
+        logger.warning(f"[SUPABASE STORAGE] get_public_url failed for '{key}': {e}")
+        return ""
 
 
 def upload_bytes(key: str, data: bytes, content_type: str = "application/octet-stream") -> bool:
@@ -71,3 +93,53 @@ def download_bytes(key: str) -> Optional[bytes]:
 def download_text(key: str) -> Optional[str]:
     data = download_bytes(key)
     return data.decode("utf-8") if data is not None else None
+
+
+def download_json(key: str) -> Optional[Any]:
+    """Downloads and parses JSON from `<SUPABASE_STORAGE_PREFIX>/<key>`, or None on failure."""
+    text = download_text(key)
+    if not text:
+        return None
+    try:
+        return json.loads(text)
+    except Exception as e:
+        logger.warning(f"[SUPABASE STORAGE] JSON parse failed for '{key}': {e}")
+        return None
+
+
+def file_exists(key: str) -> bool:
+    """Checks whether `<SUPABASE_STORAGE_PREFIX>/<key>` exists in Supabase Storage."""
+    if not is_configured():
+        return False
+    try:
+        # Try downloading 1 byte or checking download
+        data = download_bytes(key)
+        return data is not None
+    except Exception:
+        return False
+
+
+def list_files(prefix: str = "") -> list:
+    """Lists files under `<SUPABASE_STORAGE_PREFIX>/<prefix>` in the configured bucket."""
+    if not is_configured():
+        return []
+    try:
+        namespaced_prefix = _namespaced(prefix).rstrip("/")
+        items = _bucket().list(path=namespaced_prefix)
+        return items or []
+    except Exception as e:
+        logger.warning(f"[SUPABASE STORAGE] list_files failed for prefix '{prefix}': {e}")
+        return []
+
+
+def delete_file(key: str) -> bool:
+    """Deletes `<SUPABASE_STORAGE_PREFIX>/<key>` from the configured bucket."""
+    if not is_configured():
+        return False
+    try:
+        _bucket().remove([_namespaced(key)])
+        return True
+    except Exception as e:
+        logger.warning(f"[SUPABASE STORAGE] delete_file failed for '{key}': {e}")
+        return False
+

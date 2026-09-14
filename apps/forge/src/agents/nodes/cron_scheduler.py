@@ -43,26 +43,26 @@ def get_next_test_node(state: ForgeState) -> Dict[str, Any]:
     test_code = next_test.get("test_code")
     page_url = next_test.get("page_url") or state.get("target_url")
 
-    # If script_path is missing or not on disk, locate or hydrate from test_code
+    # Materialize test.py from Supabase Storage / local cache via test_artifact_store
     from pathlib import Path
-    from storage.local import get_website_storage_dir
-    site_storage = get_website_storage_dir(page_url or "https://example.com")
-    tests_dir = site_storage / "tests"
-    tests_dir.mkdir(parents=True, exist_ok=True)
+    from storage.local import sanitize_domain, get_website_storage_dir
+    from storage.test_artifact_store import materialize_test_script, load_test_artifacts
 
-    file_on_disk_exists = test_file_path and Path(test_file_path).exists()
+    domain = sanitize_domain(page_url or next_test.get("domain") or "example.com")
+    mat_path = materialize_test_script(domain, test_id, script_path=test_file_path)
+    if mat_path.exists() and mat_path.stat().st_size > 0:
+        test_file_path = str(mat_path)
+    elif test_file_path and Path(test_file_path).exists():
+        pass
+    elif test_code:
+        mat_path.write_text(test_code, encoding="utf-8")
+        test_file_path = str(mat_path)
+        logger.info(f"[CRON SCHEDULER] Hydrated test script to disk: {test_file_path}")
 
-    if not file_on_disk_exists:
-        possible_py = tests_dir / f"{test_id}.py"
-        if possible_py.exists():
-            test_file_path = str(possible_py)
-            if not test_code:
-                test_code = possible_py.read_text(encoding="utf-8")
-        elif test_code:
-            # Hydrate test_code to disk so runner can execute it
-            possible_py.write_text(test_code, encoding="utf-8")
-            test_file_path = str(possible_py)
-            logger.info(f"[CRON SCHEDULER] Hydrated test script to disk: {test_file_path}")
+    # Load test artifacts and manifest from Supabase / cache
+    artifacts_data = load_test_artifacts(domain, test_id)
+    manifest = artifacts_data.get("manifest")
+
 
     # One stable id for this whole execution cycle (including every heal attempt), so archived
     # script revisions and the resulting test_runs row can be tied together.
@@ -82,6 +82,7 @@ def get_next_test_node(state: ForgeState) -> Dict[str, Any]:
         "test_file_path": test_file_path,
         "test_code": test_code,
         "target_url": page_url,
+        "test_artifacts": artifacts_data,
         "heal_attempt": 0,
         "max_heal_attempts": state.get("max_heal_attempts", 3),
         "healing_history": [],
@@ -93,3 +94,4 @@ def get_next_test_node(state: ForgeState) -> Dict[str, Any]:
         "verifier_verdict": None,
         "verifier_reason": None,
     }
+

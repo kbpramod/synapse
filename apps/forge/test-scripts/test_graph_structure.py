@@ -7,37 +7,38 @@ src_dir = root_dir / "src"
 if str(src_dir) not in sys.path:
     sys.path.insert(0, str(src_dir))
 
-from agents.graph import create_forge_graph, route_analyzer
+from agents.graph import create_forge_graph, route_correctness, route_action_runner
 from agents.onboarding_graph import create_onboarding_graph
-from agents.state import ForgeState, AnalysisResult, TestScenario
+from agents.state import ForgeState
 
 
 def test_graph_compilation():
-    print("[TEST] Compiling Forge StateGraph...")
+    print("[TEST] Compiling Forge Decoupled StateGraph...")
     graph = create_forge_graph()
     assert graph is not None, "Graph failed to compile"
-    
-    # Check node presence in compiled graph
+
     node_names = set(graph.nodes.keys())
     expected_nodes = {
         "discover",
         "understanding",
         "planner",
-        "builder",
-        "runner",
-        "observer",
-        "analyzer",
-        "healer",
-        "editor",
-        "advance_test"
+        "action_builder",
+        "action_runner",
+        "result_discovery",
+        "expectation_analysis",
+        "correctness",
+        "heal_action",
+        "heal_expectation",
+        "assemble_testcase",
+        "advance_test",
     }
     for expected in expected_nodes:
         assert expected in node_names, f"Node '{expected}' missing from graph nodes: {node_names}"
-    print(f"[TEST PASS] All {len(expected_nodes)} nodes verified in graph: {sorted(list(expected_nodes))}")
+    print(f"[TEST PASS] All {len(expected_nodes)} decoupled nodes verified in graph: {sorted(list(expected_nodes))}")
 
 
 def test_onboarding_graph_compilation():
-    print("[TEST] Compiling Forge Onboarding StateGraph...")
+    print("[TEST] Compiling Forge Onboarding Decoupled StateGraph...")
     onboarding_graph = create_onboarding_graph()
     assert onboarding_graph is not None, "Onboarding graph failed to compile"
 
@@ -45,66 +46,95 @@ def test_onboarding_graph_compilation():
     expected_nodes = {
         "discover",
         "understanding",
+        "expectation",
         "planner",
-        "builder",
+        "get_next_hypothesis",
+        "action_builder",
+        "action_runner",
+        "result_discovery",
+        "expectation_analysis",
+        "correctness",
+        "heal_action",
+        "heal_expectation",
+        "assemble_testcase",
     }
-    assert user_nodes == expected_nodes, f"Onboarding graph should have only {expected_nodes}, but got: {user_nodes}"
+    for expected in expected_nodes:
+        assert expected in user_nodes, f"Node '{expected}' missing from onboarding nodes: {user_nodes}"
     print(f"[TEST PASS] All {len(expected_nodes)} onboarding nodes verified: {sorted(list(expected_nodes))}")
 
 
 def test_routing_logic():
-    print("[TEST] Testing conditional routing logic...")
+    print("[TEST] Testing decoupled conditional routing logic...")
 
-    # Case 1: Test failed with NEED_HEAL -> should route to 'healer'
-    heal_state: ForgeState = {
-        "analysis": {"verdict": "NEED_HEAL", "reason": "Selector not found"},
-        "current_test_idx": 0,
-        "test_plan": [{"id": "test_1"}, {"id": "test_2"}],
+    # Case 1: Action Runner passed -> should route to 'result_discovery'
+    pass_action_state: ForgeState = {
+        "action_result": {"passed": True, "exit_code": 0},
     }
-    route = route_analyzer(heal_state)
-    assert route == "healer", f"Expected 'healer', got '{route}'"
-    print("  [PASS] NEED_HEAL correctly routes to 'healer'")
+    assert route_action_runner(pass_action_state) == "result_discovery"
+    print("  [PASS] Action runner passed -> routes to 'result_discovery'")
 
-    # Case 2: Test passed and there are more tests -> should route to 'advance_test'
-    advance_state: ForgeState = {
-        "analysis": {"verdict": "PASS", "reason": "Passed"},
-        "current_test_idx": 0,
-        "test_plan": [{"id": "test_1"}, {"id": "test_2"}],
+    # Case 2: Action Runner failed (mechanical) under budget -> routes to 'heal_action'
+    fail_action_state: ForgeState = {
+        "action_result": {"passed": False, "exit_code": 1},
+        "action_heal_attempt": 0,
+        "max_action_heals": 3,
     }
-    route = route_analyzer(advance_state)
-    assert route == "advance_test", f"Expected 'advance_test', got '{route}'"
-    print("  [PASS] PASS with remaining tests correctly routes to 'advance_test'")
+    assert route_action_runner(fail_action_state) == "heal_action"
+    print("  [PASS] Action mechanical failure under budget -> routes to 'heal_action'")
 
-    # Case 3: Test passed and this was the final test -> should route to '__end__'
-    end_state: ForgeState = {
-        "analysis": {"verdict": "PASS", "reason": "Passed"},
+    # Case 3: Correctness verdict CORRECT -> routes to 'assemble_testcase'
+    correct_state: ForgeState = {
+        "correctness_verdict": "CORRECT",
+    }
+    assert route_correctness(correct_state) == "assemble_testcase"
+    print("  [PASS] Correctness CORRECT -> routes to 'assemble_testcase'")
+
+    # Case 4: Correctness verdict ACTION_DEFECT under budget -> routes to 'heal_action'
+    action_defect_state: ForgeState = {
+        "correctness_verdict": "ACTION_DEFECT",
+        "action_heal_attempt": 1,
+        "max_action_heals": 3,
+    }
+    assert route_correctness(action_defect_state) == "heal_action"
+    print("  [PASS] Correctness ACTION_DEFECT under budget -> routes to 'heal_action'")
+
+    # Case 5: Correctness verdict EXPECTATION_DEFECT under budget -> routes to 'heal_expectation'
+    exp_defect_state: ForgeState = {
+        "correctness_verdict": "EXPECTATION_DEFECT",
+        "expectation_heal_attempt": 0,
+        "max_expectation_heals": 2,
+    }
+    assert route_correctness(exp_defect_state) == "heal_expectation"
+    print("  [PASS] Correctness EXPECTATION_DEFECT under budget -> routes to 'heal_expectation'")
+
+    # Case 6: Correctness verdict INCONCLUSIVE with remaining tests -> routes to 'advance_test'
+    inconclusive_state: ForgeState = {
+        "correctness_verdict": "INCONCLUSIVE",
+        "current_test_idx": 0,
+        "test_plan": [{"id": "t1"}, {"id": "t2"}],
+    }
+    assert route_correctness(inconclusive_state) == "advance_test"
+    print("  [PASS] Correctness INCONCLUSIVE with remaining tests -> routes to 'advance_test'")
+
+    # Case 7: Correctness verdict APP_BUG on final test -> routes to '__end__'
+    app_bug_state: ForgeState = {
+        "correctness_verdict": "APP_BUG",
         "current_test_idx": 1,
-        "test_plan": [{"id": "test_1"}, {"id": "test_2"}],
+        "test_plan": [{"id": "t1"}, {"id": "t2"}],
     }
-    route = route_analyzer(end_state)
-    assert route == "__end__", f"Expected '__end__', got '{route}'"
-    print("  [PASS] PASS with last test completed correctly routes to '__end__'")
-
-    # Case 4: APP_BUG found on last test -> routes to '__end__'
-    bug_end_state: ForgeState = {
-        "analysis": {"verdict": "APP_BUG", "reason": "500 Server error"},
-        "current_test_idx": 0,
-        "test_plan": [{"id": "test_1"}],
-    }
-    route = route_analyzer(bug_end_state)
-    assert route == "__end__", f"Expected '__end__', got '{route}'"
-    print("  [PASS] APP_BUG on final test correctly routes to '__end__'")
+    assert route_correctness(app_bug_state) == "__end__"
+    print("  [PASS] Correctness APP_BUG on final test -> routes to '__end__'")
 
 
 def main():
     print("=" * 60)
-    print("RUNNING FORGE GRAPH UNIT VERIFICATION")
+    print("RUNNING FORGE DECOUPLED GRAPH VERIFICATION")
     print("=" * 60)
     test_graph_compilation()
     test_onboarding_graph_compilation()
     test_routing_logic()
     print("=" * 60)
-    print("ALL GRAPH VERIFICATION TESTS PASSED SUCCESSFULLY!")
+    print("ALL DECOUPLED GRAPH VERIFICATION TESTS PASSED SUCCESSFULLY!")
     print("=" * 60)
 
 
